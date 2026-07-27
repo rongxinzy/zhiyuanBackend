@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "zhiyuan-anysearch-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-27",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "search.rongxzyai.com",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zhiyuan-anysearch-pool",
+      "database_id": "a0f54d6a-c88d-47df-8c3d-f41ec20e1149",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "secrets": {
+    "required": ["ADMIN_TOKEN", "AGENT_GATEWAY_TOKEN", "POOL_ENCRYPTION_KEY"]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "zhiyuan-anysearch-gateway",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "check": "node ./node_modules/typescript/bin/tsc --noEmit",
+    "deploy": "node ./node_modules/wrangler/bin/wrangler.js deploy",
+    "types": "node ./node_modules/wrangler/bin/wrangler.js types"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "wrangler": "^4.98.0"
+  }
+}
