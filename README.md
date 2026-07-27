@@ -8,7 +8,7 @@ Cloudflare Worker that exposes an authenticated AnySearch endpoint to ZhiYuan Ag
 - `POST /v1/search` — `Authorization: Bearer $AGENT_GATEWAY_TOKEN`
 - `POST /admin/keys` — `Authorization: Bearer $ADMIN_TOKEN`; JSON: `{ "label": "account-a", "key": "as_sk_...", "max_concurrency": 2 }`
 - `GET /admin/keys` — returns metadata only
-- `PATCH /admin/keys/:id` — JSON: `{ "status": "active|cooldown|exhausted|disabled" }`
+- `PATCH /admin/keys/:id` — JSON: `{ "status": "active|cooldown|exhausted|disabled", "max_concurrency": 20 }`; concurrency can be increased to 50 per key.
 
 Search accepts `query`, `max_results` (1-20), `tag`, `zone`, `language`, and `params`. It returns AnySearch's JSON response plus `gateway_request_id`.
 

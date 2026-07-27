@@ -142,7 +142,7 @@ async function addKey(request: Request, env: Env, id: string): Promise<Response>
   const body = await bodyOf(request); const rawKey = body && typeof body.key === "string" ? body.key.trim() : "";
   const label = body && typeof body.label === "string" ? body.label.trim() : "";
   const concurrency = body && typeof body.max_concurrency === "number" ? body.max_concurrency : 2;
-  if (!rawKey || rawKey.length > 500 || !label || label.length > 100 || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 10) return response({ error: { code: "invalid_request", message: "label, key, and max_concurrency (1-10) are required" }, request_id: id }, 400);
+  if (!rawKey || rawKey.length > 500 || !label || label.length > 100 || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 50) return response({ error: { code: "invalid_request", message: "label, key, and max_concurrency (1-50) are required" }, request_id: id }, 400);
   const keyId = crypto.randomUUID(); const timestamp = now(); const encrypted = await encrypt(rawKey, env.POOL_ENCRYPTION_KEY, `anysearch-key:${keyId}:v1`);
   const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO anysearch_keys (id, label, key_ciphertext, key_iv, max_concurrency, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(keyId, label, encrypted.ciphertext, encrypted.iv, concurrency, timestamp, timestamp)];
   for (let slot = 1; slot <= concurrency; slot++) statements.push(env.DB.prepare("INSERT INTO anysearch_key_slots (key_id, slot_no) VALUES (?, ?)").bind(keyId, slot));
@@ -160,9 +160,19 @@ async function admin(request: Request, env: Env, id: string, path: string): Prom
   const match = path.match(/^\/admin\/keys\/([^/]+)$/);
   if (match && request.method === "PATCH") {
     const body = await bodyOf(request); const status = body?.status;
-    if (typeof status !== "string" || !["active", "cooldown", "exhausted", "disabled"].includes(status)) return response({ error: { code: "invalid_request", message: "status must be active, cooldown, exhausted, or disabled" }, request_id: id }, 400);
-    await env.DB.prepare("UPDATE anysearch_keys SET status = ?, cooldown_until = CASE WHEN ? = 'active' THEN NULL ELSE cooldown_until END, updated_at = ? WHERE id = ?").bind(status, status, now(), match[1]).run();
-    return response({ data: { id: match[1], status }, request_id: id });
+    const concurrency = body?.max_concurrency;
+    if (status !== undefined && (typeof status !== "string" || !["active", "cooldown", "exhausted", "disabled"].includes(status))) return response({ error: { code: "invalid_request", message: "status must be active, cooldown, exhausted, or disabled" }, request_id: id }, 400);
+    if (concurrency !== undefined && (typeof concurrency !== "number" || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 50)) return response({ error: { code: "invalid_request", message: "max_concurrency must be an integer from 1 to 50" }, request_id: id }, 400);
+    if (status === undefined && concurrency === undefined) return response({ error: { code: "invalid_request", message: "provide status and/or max_concurrency" }, request_id: id }, 400);
+    const key = await env.DB.prepare("SELECT * FROM anysearch_keys WHERE id = ?").bind(match[1]).first<KeyRow>();
+    if (!key) return response({ error: { code: "not_found", message: "Key not found" }, request_id: id }, 404);
+    if (typeof concurrency === "number" && concurrency < key.max_concurrency) return response({ error: { code: "invalid_request", message: "Reducing concurrency requires draining leases and is not supported by this endpoint" }, request_id: id }, 409);
+    const timestamp = now();
+    const statements: D1PreparedStatement[] = [env.DB.prepare("UPDATE anysearch_keys SET status = COALESCE(?, status), cooldown_until = CASE WHEN ? = 'active' THEN NULL ELSE cooldown_until END, max_concurrency = COALESCE(?, max_concurrency), updated_at = ? WHERE id = ?").bind(status ?? null, status ?? null, concurrency ?? null, timestamp, key.id)];
+    if (typeof concurrency === "number") for (let slot = key.max_concurrency + 1; slot <= concurrency; slot++) statements.push(env.DB.prepare("INSERT INTO anysearch_key_slots (key_id, slot_no) VALUES (?, ?)").bind(key.id, slot));
+    await env.DB.batch(statements);
+    log("pool.key_updated", { request_id: id, key_id: key.id, status: status ?? key.status, max_concurrency: concurrency ?? key.max_concurrency });
+    return response({ data: { id: key.id, status: status ?? key.status, max_concurrency: concurrency ?? key.max_concurrency }, request_id: id });
   }
   return response({ error: { code: "not_found", message: "Unknown admin endpoint" }, request_id: id }, 404);
 }
