@@ -5,8 +5,11 @@
   "type": "module",
   "scripts": {
     "check": "node ./node_modules/typescript/bin/tsc --noEmit",
+    "check:update": "node ./node_modules/typescript/bin/tsc --project workers/update/tsconfig.json --noEmit",
     "deploy": "node ./node_modules/wrangler/bin/wrangler.js deploy",
-    "types": "node ./node_modules/wrangler/bin/wrangler.js types"
+    "deploy:update": "node ./node_modules/wrangler/bin/wrangler.js deploy --config workers/update/wrangler.jsonc",
+    "types": "node ./node_modules/wrangler/bin/wrangler.js types",
+    "types:update": "node ./node_modules/wrangler/bin/wrangler.js types workers/update/worker-configuration.d.ts --config workers/update/wrangler.jsonc"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

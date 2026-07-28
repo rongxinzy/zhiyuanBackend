@@ -1,0 +1,23 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "zhiyuan-update-service",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-28",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "updates.rongxzyai.com",
+      "custom_domain": true
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "RELEASES",
+      "bucket_name": "zhiyuan-releases"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}
