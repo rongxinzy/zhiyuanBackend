@@ -1,7 +1,7 @@
 const CHANNELS = new Set(['stable']);
-const PLATFORMS = new Set(['win32', 'darwin']);
+const PLATFORMS = new Set(['win32', 'darwin', 'linux']);
 const ARCHITECTURES = new Set(['x64', 'arm64']);
-const VARIANTS = new Set(['lite', 'full', 'default']);
+const VARIANTS = new Set(['lite', 'full', 'default', 'deb', 'appimage']);
 const MANIFEST_KEY = 'channels/stable.json';
 
 type Artifact = {
