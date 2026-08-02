@@ -70,7 +70,6 @@ function structuredModelSourceText(model: ModelScopeModel): string {
     .join(' ')
     .toLowerCase();
 }
-
 function hasMmprojFile(model: ModelScopeModel): boolean {
   return list(model.siblings ?? model.files).some((value) => {
     if (!isRecord(value)) return false;
@@ -82,32 +81,43 @@ function hasMmprojFile(model: ModelScopeModel): boolean {
 }
 
 /**
- * Capabilities must be backed by ModelScope structured fields or the model
- * card. Repository names are intentionally excluded from this inference.
+ * Capabilities must be backed by ModelScope structured fields, namespaced
+ * tags, file evidence, or a strong repository-naming pattern. Bare community
+ * tags like "vision"/"code"/"reasoning" are unreliable (plain chat repos such
+ * as Qwen1.5 carry them too), and free-text descriptions mention capabilities
+ * of unrelated models, so neither is used here.
  */
 function inferCapability(model: ModelScopeModel): CatalogTask[] {
-  const structuredText = structuredModelSourceText(model);
-  const modelCard = (asString(model.readme) ?? '').toLowerCase();
+  const officialTasks = normalizeTags(model.tasks).map((tag) => tag.toLowerCase());
+  const namespacedTags = normalizeTags(model.tags)
+    .map((tag) => tag.toLowerCase())
+    .filter((tag) => tag.startsWith('task:') || tag.startsWith('custom_tag:'));
+  const pipeline = (asString(model.pipeline_tag) ?? '').toLowerCase();
+  // Official ModelScope task labels, pipeline tag, and namespaced tags are the
+  // only textual signals trusted for capability inference.
+  const official = [...officialTasks, pipeline, ...namespacedTags].join(' ');
+  const repoName = `${normalizedRepoId(model)} ${asString(model.display_name ?? model.name) ?? ''}`.toLowerCase();
   const capabilities: CatalogTask[] = [];
+
   if (
-    /\b(?:code|coding|programming|code-generation)\b/.test(structuredText) ||
-    /\b(?:coding assistant|coding model|code generation|code completion|programming model|trained (?:for|on) (?:source )?code)\b/.test(modelCard)
+    /\b(?:code|coding|code-generation)\b/.test(official) ||
+    /\b(?:coder|coding[- ]assistant)\b/.test(repoName)
   ) {
     capabilities.push('code');
   }
-  if (
-    /\b(?:reasoning|thinking|mathematics|math|logical)\b/.test(structuredText) ||
-    /\b(?:reasoning model|reasoning capabilities|reasoning tasks|chain[- ]of[- ]thought)\b/.test(modelCard)
-  ) {
+  if (/\b(?:reasoning|thinking|math|reasoner)\b/.test(official)) {
     capabilities.push('reasoning');
   }
   if (
-    /\b(?:vision|visual|multimodal|image-text-to-text|image to text|ocr)\b/.test(structuredText) ||
-    hasMmprojFile(model)
+    hasMmprojFile(model) ||
+    /\b(?:image-text-to-text|multimodal|visual)\b/.test(official) ||
+    // VL/VLM suffix in the repo/display name is a strong vision-language
+    // signal (Qwen2.5-VL, Qwen2-VL, Qwen3-VL, MiniCPM-V, InternVL...).
+    /\b(?:-?vl-?|-?vlm-?|vision-language)\b/.test(repoName)
   ) {
     capabilities.push('vision');
   }
-  if (/\b(?:text-generation|chat|conversation|instruct|instruction-following|causal language)\b/.test(structuredText)) {
+  if (/\b(?:text-generation|chat|conversation|instruct|instruction-following|causal language)\b/.test(official)) {
     capabilities.push('chat');
   }
   const resolved: CatalogTask[] = capabilities.length ? capabilities : ['chat'];
