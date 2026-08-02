@@ -593,7 +593,19 @@ async function hydrateModel(env: CatalogEnv, repoId: string): Promise<void> {
   if (stored?.fresh) return;
   const [owner, repo] = repoId.split('/');
   if (!owner || !repo) return;
-  const model = await withModelScope(env, (token) => getModelScopeDetail(token, owner, repo));
+  let model: CatalogModel | null;
+  try {
+    model = await withModelScope(env, (token) => getModelScopeDetail(token, owner, repo));
+  } catch (error) {
+    if (error instanceof ModelScopeHttpError && error.status === 404) {
+      // The model was removed upstream; drop the stale local record so the
+      // catalog never surfaces entries that can no longer be installed.
+      await env.DB.prepare('DELETE FROM model_files WHERE model_id = ?').bind(repoId).run();
+      await env.DB.prepare('DELETE FROM models WHERE repo_id = ?').bind(repoId).run();
+      return;
+    }
+    throw error;
+  }
   if (model) await upsertModels(env, [model]);
 }
 
