@@ -589,10 +589,44 @@ async function refreshFeatured(env: CatalogEnv): Promise<void> {
 }
 
 async function hydrateModel(env: CatalogEnv, repoId: string): Promise<void> {
+  const stored = await readStoredModel(env, repoId);
+  if (stored?.fresh) return;
   const [owner, repo] = repoId.split('/');
   if (!owner || !repo) return;
   const model = await withModelScope(env, (token) => getModelScopeDetail(token, owner, repo));
   if (model) await upsertModels(env, [model]);
+}
+
+const TOP_MODEL_SCAN_PAGES = 4;
+const TOP_MODEL_SCAN_PAGE_SIZE = 50;
+const QUEUE_SEND_BATCH_LIMIT = 100;
+
+/**
+ * Discover new models by scanning the top-downloaded GGUF list on ModelScope
+ * for both the text-generation and image-text-to-text pipelines, then queue
+ * hydration for every repo id. Hydration skips models already stored fresh,
+ * so repeated runs only add genuinely new entries.
+ */
+async function enqueueTopModels(env: CatalogEnv): Promise<void> {
+  const messages: CatalogSyncMessage[] = [];
+  const seen = new Set<string>();
+  for (const task of ['all', 'vision'] as const) {
+    for (let page = 1; page <= TOP_MODEL_SCAN_PAGES; page += 1) {
+      const result = await withModelScope(env, (token) =>
+        searchModelScope(token, '', page, TOP_MODEL_SCAN_PAGE_SIZE, task),
+      );
+      for (const model of result.models) {
+        if (seen.has(model.repoId)) continue;
+        seen.add(model.repoId);
+        messages.push({ kind: 'hydrate-model', repoId: model.repoId });
+      }
+    }
+  }
+  for (let offset = 0; offset < messages.length; offset += QUEUE_SEND_BATCH_LIMIT) {
+    await env.MODEL_SYNC_QUEUE.sendBatch(
+      messages.slice(offset, offset + QUEUE_SEND_BATCH_LIMIT).map((body) => ({ body })),
+    );
+  }
 }
 
 async function rank(request: Request): Promise<Response> {
@@ -729,6 +763,7 @@ export default {
     _ctx: ExecutionContext,
   ): Promise<void> {
     await env.MODEL_SYNC_QUEUE.send({ kind: 'refresh-featured' } satisfies CatalogSyncMessage);
+    await enqueueTopModels(env);
   },
   async queue(batch: MessageBatch<unknown>, env: CatalogEnv): Promise<void> {
     for (const message of batch.messages) {
