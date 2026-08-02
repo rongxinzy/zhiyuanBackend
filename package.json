@@ -6,10 +6,13 @@
   "scripts": {
     "check": "node ./node_modules/typescript/bin/tsc --noEmit",
     "check:update": "node ./node_modules/typescript/bin/tsc --project workers/update/tsconfig.json --noEmit",
+    "check:catalog": "node ./node_modules/typescript/bin/tsc --project workers/model-catalog/tsconfig.json --noEmit",
     "deploy": "node ./node_modules/wrangler/bin/wrangler.js deploy",
     "deploy:update": "node ./node_modules/wrangler/bin/wrangler.js deploy --config workers/update/wrangler.jsonc",
     "types": "node ./node_modules/wrangler/bin/wrangler.js types",
-    "types:update": "node ./node_modules/wrangler/bin/wrangler.js types workers/update/worker-configuration.d.ts --config workers/update/wrangler.jsonc"
+    "types:update": "node ./node_modules/wrangler/bin/wrangler.js types workers/update/worker-configuration.d.ts --config workers/update/wrangler.jsonc",
+    "types:catalog": "node ./node_modules/wrangler/bin/wrangler.js types workers/model-catalog/worker-configuration.d.ts --config workers/model-catalog/wrangler.jsonc",
+    "deploy:catalog": "node ./node_modules/wrangler/bin/wrangler.js deploy --config workers/model-catalog/wrangler.jsonc"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

@@ -1,0 +1,65 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "zhiyuan-model-catalog",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-01",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": false,
+	"routes": [
+		{
+			"pattern": "models.rongxzyai.com",
+			"custom_domain": true
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "zhiyuan-model-catalog",
+			"database_id": "50f6b300-7c67-41c6-8431-7aa2bfd88a7f",
+			"migrations_dir": "migrations",
+			"remote": true
+		}
+	],
+	"queues": {
+		"producers": [
+			{
+				"binding": "MODEL_SYNC_QUEUE",
+				"queue": "zhiyuan-model-sync"
+			}
+		],
+		"consumers": [
+			{
+				"queue": "zhiyuan-model-sync",
+				"max_batch_size": 10,
+				"max_batch_timeout": 30,
+				"max_retries": 5,
+				"dead_letter_queue": "zhiyuan-model-sync-dlq"
+			}
+		]
+	},
+	"triggers": {
+		"crons": [
+			"0 */6 * * *"
+		]
+	},
+	"ratelimits": [
+		{
+			"name": "CATALOG_RATE_LIMITER",
+			"namespace_id": "24080101",
+			"simple": {
+				"limit": 300,
+				"period": 60
+			}
+		}
+	],
+	"secrets": {
+		"required": ["MODELSCOPE_TOKEN_BUNDLE"]
+	},
+	"vars": {
+		"CATALOG_SCORE_VERSION": "2026-08-01-v2"
+	},
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	}
+}
