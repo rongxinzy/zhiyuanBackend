@@ -71,24 +71,13 @@ function parseSize(value: string | null): CatalogSize {
   return allowed.includes(value as CatalogSize) ? (value as CatalogSize) : 'all';
 }
 
-function upstreamQuery(query: string, task: CatalogTask): string {
-  if (query) {
-    return task === 'code' || task === 'reasoning' || task === 'vision'
-      ? `${query} ${task}`
-      : query;
-  }
-  switch (task) {
-    case 'code':
-      return 'code';
-    case 'reasoning':
-      return 'reasoning';
-    case 'vision':
-      return 'vision';
-    case 'embedding':
-      return 'embedding';
-    default:
-      return '';
-  }
+function upstreamQuery(query: string, _task: CatalogTask): string {
+  // Task filtering is handled by the upstream pipeline filter plus the local
+  // capability check in matchesFilters. Appending the task keyword to the
+  // query only narrows results to models whose name/description contains the
+  // keyword (e.g. "vision"), silently dropping real vision-language models
+  // like Qwen2.5-VL that never mention it.
+  return query;
 }
 
 function modelFromRow(row: DbModelRow): CatalogModel | null {
@@ -130,6 +119,66 @@ function matchesFilters(
     return false;
   }
   return true;
+}
+
+/**
+ * Category and keyword pages are answered from the D1 model library, which
+ * stores every verified GGUF model seen so far with its inferred capability.
+ * This avoids relying on an upstream search that can match non-installable
+ * records and whose totalCount counts them too.
+ *
+ * The corpus is small (tens of rows), so the whole matched set is loaded and
+ * filtered in memory. That keeps totalCount consistent with the visible
+ * models and keeps every page full, unlike SQL LIMIT/OFFSET which would
+ * under-fill pages after capability/verified filtering.
+ */
+async function searchDbModels(
+  env: CatalogEnv,
+  input: {
+    task: CatalogTask;
+    size: CatalogSize;
+    tags: string[];
+    query: string;
+    page: number;
+    limit: number;
+  },
+): Promise<{ models: CatalogModel[]; totalCount: number }> {
+  // task/size are whitelist enums from parseTask/parseSize, safe to inline.
+  const conditions: string[] = [];
+  if (input.task !== 'all') conditions.push(`capability_json LIKE '%"${input.task}"%'`);
+  if (input.size !== 'all') conditions.push(`sizes_json LIKE '%"${input.size}"%'`);
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const rows = await env.DB.prepare(
+    `SELECT model_json FROM models ${where} ORDER BY downloads DESC`,
+  ).all<{ model_json: string }>();
+  const keyword = input.query.trim().toLowerCase();
+  const filtered = (rows.results ?? [])
+    .map((row) => {
+      try {
+        return JSON.parse(row.model_json) as CatalogModel;
+      } catch {
+        return null;
+      }
+    })
+    .filter((model): model is CatalogModel => {
+      if (!model || !matchesFilters(model, input.task, input.size, input.tags)) return false;
+      if (!keyword) return true;
+      const haystack = [
+        model.repoId,
+        model.name,
+        model.description,
+        model.recommendedTag,
+        ...model.tags,
+        ...model.sizes,
+      ]
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(keyword);
+    });
+  return {
+    models: filtered.slice((input.page - 1) * input.limit, input.page * input.limit),
+    totalCount: filtered.length,
+  };
 }
 
 async function upsertModels(env: CatalogEnv, models: CatalogModel[]): Promise<void> {
@@ -288,10 +337,56 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
   }
 
   try {
-    const result = await withModelScope(env, (token) =>
-      searchModelScope(token, upstreamQuery(query, task), page, limit),
-    );
-    let models = result.models.filter((model) => matchesFilters(model, task, size, tags));
+    let models: CatalogModel[] = [];
+    let totalCount = 0;
+    let hasNextPage = false;
+    let needsUpsert = true;
+
+    if (query.trim()) {
+      // Keyword search: answer from the verified D1 GGUF library so totalCount
+      // counts installable models only; fall back to the upstream search when
+      // the library has not seen any matching model yet.
+      const db = await searchDbModels(env, { task, size, tags, query, page, limit });
+      if (db.totalCount > 0) {
+        models = db.models;
+        totalCount = db.totalCount;
+        hasNextPage = page * limit < totalCount;
+        needsUpsert = false;
+      } else {
+        const result = await withModelScope(env, (token) =>
+          searchModelScope(token, query, page, limit, task),
+        );
+        models = result.models.filter((model) => matchesFilters(model, task, size, tags));
+        totalCount = result.total ?? models.length;
+        hasNextPage = totalCount > page * limit;
+      }
+    } else if (!featuredOnly && (task !== 'all' || size !== 'all' || tags.length > 0)) {
+      // Category page: answer from the D1 model library by capability/size/tags.
+      const db = await searchDbModels(env, { task, size, tags, query: '', page, limit });
+      models = db.models;
+      totalCount = db.totalCount;
+      hasNextPage = page * limit < totalCount;
+      if (db.totalCount === 0) {
+        // Cold-start fallback while the library has not seen this category yet.
+        const result = await withModelScope(env, (token) =>
+          searchModelScope(token, '', page, limit, task),
+        );
+        models = result.models.filter((model) => matchesFilters(model, task, size, tags));
+        totalCount = result.total ?? models.length;
+        hasNextPage = totalCount > page * limit;
+      } else {
+        needsUpsert = false;
+      }
+    } else {
+      // task=all browse / featured: ModelScope upstream default list.
+      const result = await withModelScope(env, (token) =>
+        searchModelScope(token, '', page, limit, task),
+      );
+      models = result.models.filter((model) => matchesFilters(model, task, size, tags));
+      totalCount = featuredOnly ? models.length : (result.total ?? models.length);
+      hasNextPage = !featuredOnly && totalCount > page * limit;
+    }
+
     if (featuredOnly) {
       models = models.map((model, index) => ({
         ...model,
@@ -299,13 +394,10 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         featuredRank: index + 1,
       }));
     }
-    await upsertModels(env, models);
-    // Featured is a deliberately curated surface, not a misleading first page of every model.
-    // Search/category pages retain ModelScope's upstream total and pagination.
-    const totalCount = featuredOnly ? models.length : (result.total ?? models.length);
+    if (needsUpsert) await upsertModels(env, models);
     const response: CatalogSearchResponse = {
       ...createCatalogResponse(models, totalCount),
-      ...(!featuredOnly && totalCount > page * limit ? { nextPageNumber: page + 1 } : {}),
+      ...(hasNextPage ? { nextPageNumber: page + 1 } : {}),
       source: 'modelscope',
     };
     await writeCatalogPage(

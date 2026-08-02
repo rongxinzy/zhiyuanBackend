@@ -463,12 +463,23 @@ function authHeaders(token?: string): Record<string, string> {
   };
 }
 
-export function buildSearchUrl(query: string, pageNumber: number, pageSize: number): string {
+export function buildSearchUrl(
+  query: string,
+  pageNumber: number,
+  pageSize: number,
+  task: CatalogTask = 'all',
+): string {
   const url = new URL(`${MODEL_SCOPE_ENDPOINT}/openapi/v1/models`);
   if (query.trim()) url.searchParams.set('search', query.trim());
   url.searchParams.set('sort', 'downloads');
   url.searchParams.set('filter.library', 'gguf');
-  url.searchParams.set('filter.task', 'text-generation');
+  // Vision-language models use the image-text-to-text pipeline. A hard-coded
+  // text-generation filter silently excludes them from upstream results, so
+  // the pipeline filter follows the requested task.
+  url.searchParams.set(
+    'filter.task',
+    task === 'vision' ? 'image-text-to-text' : 'text-generation',
+  );
   url.searchParams.set('page_number', String(pageNumber));
   url.searchParams.set('page_size', String(pageSize));
   return url.toString();
@@ -518,9 +529,10 @@ export async function searchModelScope(
   query: string,
   pageNumber = 1,
   pageSize = 20,
+  task: CatalogTask = 'all',
   fetcher: typeof fetch = fetch,
 ): Promise<{ models: CatalogModel[]; total?: number }> {
-  const response = await fetcher(buildSearchUrl(query, pageNumber, pageSize), {
+  const response = await fetcher(buildSearchUrl(query, pageNumber, pageSize, task), {
     headers: authHeaders(token),
   });
   const extracted = extractModels(await readJson(response));
