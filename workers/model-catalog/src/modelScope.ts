@@ -170,19 +170,79 @@ function fileRecord(file: ModelScopeFile, repoId: string, fallbackRevision = 'ma
   };
 }
 
-function recommendedFile(files: CatalogFile[]): CatalogFile | undefined {
+export function shardGroupKey(filePath: string): string | null {
+  const match = filePath.match(/^(.*?)-?\d{5}-of-\d{5}\.gguf$/i);
+  return match ? match[1] : null;
+}
+
+export function shardGroups(files: CatalogFile[]): Map<string, CatalogFile[]> {
+  const groups = new Map<string, CatalogFile[]>();
+  for (const file of files) {
+    if (file.kind === 'mmproj') continue;
+    if (!GGUF_SHARD_PATTERN.test(file.path)) continue;
+    const key = shardGroupKey(file.path);
+    if (!key) continue;
+    const list = groups.get(key) ?? [];
+    list.push(file);
+    groups.set(key, list);
+  }
+  return groups;
+}
+
+const QUANT_PREFERENCES = ['Q4_K_M', 'Q5_K_M', 'Q5_0', 'Q4_0', 'Q6_K', 'Q8_0'];
+
+export function recommendedFile(files: CatalogFile[]): CatalogFile | undefined {
   const installable = files.filter(
     (file) =>
       file.kind !== 'mmproj' &&
       !GGUF_SHARD_PATTERN.test(file.path) &&
       Boolean(file.sizeBytes && file.sizeBytes > 0 && file.sha256),
   );
-  const preferences = ['Q4_K_M', 'Q5_K_M', 'Q5_0', 'Q4_0', 'Q6_K', 'Q8_0'];
-  for (const quantization of preferences) {
-    const match = installable.find((file) => file.quantization === quantization);
-    if (match) return match;
+  const pickByPreference = (candidates: CatalogFile[]): CatalogFile | undefined => {
+    for (const quantization of QUANT_PREFERENCES) {
+      const match = candidates.find((file) => file.quantization === quantization);
+      if (match) return match;
+    }
+    return undefined;
+  };
+  const preferred = pickByPreference(installable);
+  if (preferred) return preferred;
+  if (installable.length > 0) {
+    return installable.sort((left, right) => (left.sizeBytes ?? 0) - (right.sizeBytes ?? 0))[0];
   }
-  return installable.sort((left, right) => (left.sizeBytes ?? 0) - (right.sizeBytes ?? 0))[0];
+  // Split-only repos (e.g. QwQ-32B: one fp16 quantization sharded into many
+  // parts) have no standalone GGUF file. Pick a shard group by quantization
+  // preference, then the numerically-first part as the representative file so
+  // the repo stays installable — the client downloads every part of the group.
+  const groups = [...shardGroups(files).entries()];
+  if (groups.length === 0) return undefined;
+  // Derive a group's quantization from its stripped base name (the subdirectory
+  // for directory-layout shards, the bare base for root-level ones). Reading
+  // the raw file path is unreliable: "Q4_K_M/Model-Q4_K_M-00001-of-00004.gguf"
+  // would extract "Q4_K" from the directory separator.
+  const groupQuantization = (key: string): string | undefined => {
+    const base = key.split('/').at(-1) ?? key;
+    return base.match(
+      /(?:^|[-_.])(q[234568](?:_[0-9]+)?(?:_[kmst](?:_?[sml])?)?|iq[1-4]_[a-z0-9]+|f16|f32)(?:[-_.]|$)/i,
+    )?.[1]?.toUpperCase();
+  };
+  const quantizationRank = (quantization?: string): number => {
+    const index = QUANT_PREFERENCES.indexOf((quantization ?? '').toUpperCase());
+    return index === -1 ? QUANT_PREFERENCES.length : index;
+  };
+  groups.sort((left, right) => {
+    const rankDelta =
+      quantizationRank(groupQuantization(left[0])) -
+      quantizationRank(groupQuantization(right[0]));
+    if (rankDelta !== 0) return rankDelta;
+    const sizeOf = (group: CatalogFile[]) =>
+      group.reduce((sum, file) => sum + (file.sizeBytes ?? 0), 0);
+    return sizeOf(left[1]) - sizeOf(right[1]);
+  });
+  const firstPart = groups[0][1].sort((left, right) =>
+    left.path.localeCompare(right.path, undefined, { numeric: true }),
+  )[0];
+  return firstPart;
 }
 
 function normalizeFiles(rawFiles: unknown, repoId: string): CatalogFile[] {

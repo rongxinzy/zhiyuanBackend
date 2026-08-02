@@ -6,9 +6,12 @@ import {
   getModelScopeDetail,
   isVerifiedGgufModel,
   ModelScopeHttpError,
+  recommendedFile,
   searchModelScope,
+  shardGroups,
 } from '../src/modelScope';
 import { parseTokens } from '../src/tokenPool';
+import type { CatalogFile } from '../src/types';
 
 const SHA = 'a'.repeat(64);
 
@@ -206,5 +209,72 @@ describe('ModelScope GGUF adapter', () => {
       status: 429,
       retryAfterSeconds: 37,
     });
+  });
+});
+
+describe('split-GGUF recommendation', () => {
+  const part = (path: string, sizeBytes: number): CatalogFile => {
+    const base = path.split('/').at(-1) ?? path;
+    const quantMatch = base.match(
+      /(?:^|[-_.])(q[234568](?:_[0-9]+)?(?:_[kmst](?:_?[sml])?)?|iq[1-4]_[a-z0-9]+|f16|f32)(?:[-_.]|$)/i,
+    );
+    return {
+      path,
+      sizeBytes,
+      sha256: SHA,
+      quantization: quantMatch?.[1]?.toUpperCase(),
+      isRecommended: false,
+      kind: 'model',
+      downloadUrl: `https://modelscope.cn/models/x/${path}`,
+    };
+  };
+
+  it('picks a standalone quantization when one exists', () => {
+    const files = [
+      part('Model-Q2_K.gguf', 3_000_000_000),
+      part('Model-Q4_K_M.gguf', 4_000_000_000),
+      part('Model-Q5_K_M.gguf', 5_000_000_000),
+    ];
+    expect(recommendedFile(files)?.path).toBe('Model-Q4_K_M.gguf');
+  });
+
+  it('prefers a standalone file over split parts in the same repo', () => {
+    const files = [
+      part('Model-UD-TQ1_0.gguf', 55_800_000_000),
+      part('BF16/Model-BF16-00001-of-00010.gguf', 47_000_000_000),
+      part('BF16/Model-BF16-00002-of-00010.gguf', 48_000_000_000),
+    ];
+    expect(recommendedFile(files)?.path).toBe('Model-UD-TQ1_0.gguf');
+  });
+
+  it('recommends the first part of the preferred shard group when split-only', () => {
+    const files = [
+      part('BF16/Model-BF16-00001-of-00002.gguf', 47_000_000_000),
+      part('BF16/Model-BF16-00002-of-00002.gguf', 48_000_000_000),
+      part('Q4_K_M/Model-Q4_K_M-00001-of-00004.gguf', 49_000_000_000),
+      part('Q4_K_M/Model-Q4_K_M-00002-of-00004.gguf', 49_000_000_000),
+      part('Q4_K_M/Model-Q4_K_M-00003-of-00004.gguf', 49_000_000_000),
+      part('Q4_K_M/Model-Q4_K_M-00004-of-00004.gguf', 49_000_000_000),
+    ];
+    expect(recommendedFile(files)?.path).toBe('Q4_K_M/Model-Q4_K_M-00001-of-00004.gguf');
+  });
+
+  it('groups root-level shards by their stripped base name', () => {
+    const files = [
+      part('qwq-32b-fp16-00001-of-00017.gguf', 3_900_000_000),
+      part('qwq-32b-fp16-00002-of-00017.gguf', 3_900_000_000),
+    ];
+    expect(shardGroups(files).size).toBe(1);
+    expect([...shardGroups(files).keys()][0]).toBe('qwq-32b-fp16');
+    expect(recommendedFile(files)?.path).toBe('qwq-32b-fp16-00001-of-00017.gguf');
+  });
+
+  it('excludes mmproj files from recommendation', () => {
+    const files = [
+      part('mmproj-model-f16.gguf', 1_400_000_000),
+      part('Model-Q4_K_M.gguf', 4_000_000_000),
+    ];
+    files[0] = { ...files[0], kind: 'mmproj' };
+    expect(recommendedFile(files)?.path).toBe('Model-Q4_K_M.gguf');
   });
 });
