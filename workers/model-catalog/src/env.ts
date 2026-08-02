@@ -1,6 +1,7 @@
 export type CatalogSyncMessage =
   | { kind: 'refresh-featured'; query?: string }
-  | { kind: 'hydrate-model'; repoId: string };
+  | { kind: 'hydrate-model'; repoId: string }
+  | { kind: 'sync-page'; page: number };
 
 type SecretsStoreSecret = {
   get(): Promise<string | null>;

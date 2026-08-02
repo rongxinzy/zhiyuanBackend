@@ -639,9 +639,52 @@ async function hydrateModel(env: CatalogEnv, repoId: string): Promise<void> {
   if (model) await upsertModels(env, [model]);
 }
 
-const TOP_MODEL_SCAN_PAGES = 4;
+const TOP_MODEL_SCAN_PAGES = 10;
 const TOP_MODEL_SCAN_PAGE_SIZE = 50;
 const QUEUE_SEND_BATCH_LIMIT = 100;
+const CATALOGUE_SYNC_PAGE_SIZE = 50;
+const CATALOGUE_SYNC_MAX_PAGES = 300;
+const CATALOGUE_COVERAGE_THRESHOLD = 0.9;
+
+/**
+ * Backfill the verified D1 library page by page until it covers the upstream
+ * catalogue. Passive hydration only adds pages users actually visited, which
+ * leaves category pages (code/vision/…) far too thin. The full sweep is
+ * expensive (every search hit is hydrated with file metadata), so it runs only
+ * while library coverage stays below the threshold; once covered, the top-model
+ * scan in enqueueTopModels keeps the library fresh incrementally.
+ */
+async function enqueueCatalogueSync(env: CatalogEnv): Promise<void> {
+  const first = await withModelScope(env, (token) =>
+    searchModelScope(token, '', 1, CATALOGUE_SYNC_PAGE_SIZE),
+  );
+  const upstreamTotal = first.total ?? first.models.length;
+  if (upstreamTotal <= 0) return;
+  const stored = await env.DB.prepare('SELECT COUNT(*) AS n FROM models').first<{ n: number }>();
+  const coverage = stored?.n ? stored.n / upstreamTotal : 0;
+  if (coverage >= CATALOGUE_COVERAGE_THRESHOLD) return;
+  await upsertModels(env, first.models);
+  const totalPages = Math.min(
+    CATALOGUE_SYNC_MAX_PAGES,
+    Math.max(1, Math.ceil(upstreamTotal / CATALOGUE_SYNC_PAGE_SIZE)),
+  );
+  const messages: CatalogSyncMessage[] = [];
+  for (let page = 2; page <= totalPages; page += 1) {
+    messages.push({ kind: 'sync-page', page });
+  }
+  for (let offset = 0; offset < messages.length; offset += QUEUE_SEND_BATCH_LIMIT) {
+    await env.MODEL_SYNC_QUEUE.sendBatch(
+      messages.slice(offset, offset + QUEUE_SEND_BATCH_LIMIT).map((body) => ({ body })),
+    );
+  }
+}
+
+async function syncCataloguePage(env: CatalogEnv, page: number): Promise<void> {
+  const result = await withModelScope(env, (token) =>
+    searchModelScope(token, '', page, CATALOGUE_SYNC_PAGE_SIZE),
+  );
+  await upsertModels(env, result.models);
+}
 
 /**
  * Discover new models by scanning the top-downloaded GGUF list on ModelScope
@@ -806,6 +849,7 @@ export default {
   ): Promise<void> {
     await env.MODEL_SYNC_QUEUE.send({ kind: 'refresh-featured' } satisfies CatalogSyncMessage);
     await enqueueTopModels(env);
+    await enqueueCatalogueSync(env);
   },
   async queue(batch: MessageBatch<unknown>, env: CatalogEnv): Promise<void> {
     for (const message of batch.messages) {
@@ -813,6 +857,7 @@ export default {
         const body = message.body as CatalogSyncMessage;
         if (body.kind === 'refresh-featured') await refreshFeatured(env);
         if (body.kind === 'hydrate-model') await hydrateModel(env, body.repoId);
+        if (body.kind === 'sync-page') await syncCataloguePage(env, body.page);
         message.ack();
       } catch (error) {
         console.error(
