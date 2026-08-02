@@ -25,9 +25,12 @@ const CORS = {
 };
 const NON_GENERATIVE_GGUF_PATTERN =
   /(?:^|[/\s._-])(?:embedding|embed|bge|e5|gte|rerank(?:er)?|sentence[-_ ]transformers?|clip|siglip|colbert|vector(?:izer)?|text[-_ ]embedding|flux|comfyui|stable[-_ ]diffusion|sdxl|controlnet|diffusion|vae|image[-_ ]generation|image[-_ ]to[-_ ]image|lora|adapter)(?=$|[/\s._-])/i;
-const SEARCH_CACHE_TTL_SECONDS = 60 * 60;
-const FEATURED_CACHE_TTL_SECONDS = 6 * 60 * 60;
-const DETAIL_CACHE_TTL_SECONDS = 24 * 60 * 60;
+// Model catalogue data changes rarely (a handful of new repos per day at
+// most), so cached pages stay valid for a long time; the stale-while-error
+// fallback below still serves them long after expiry when upstream is down.
+const SEARCH_CACHE_TTL_SECONDS = 24 * 60 * 60;
+const FEATURED_CACHE_TTL_SECONDS = 3 * 24 * 60 * 60;
+const DETAIL_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
 const MAX_SEARCH_LIMIT = 50;
 const MAX_RANK_MODELS = 50;
 const MAX_JSON_BODY_BYTES = 128 * 1024;
@@ -377,8 +380,35 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
       } else {
         needsUpsert = false;
       }
+    } else if (!featuredOnly) {
+      // Browse (no query, no filters): answer from the verified D1 library —
+      // every catalogue page is served without touching the upstream, which
+      // is what keeps first paint and pagination fast even when ModelScope
+      // rate-limits or is unreachable. Fall back to upstream only while the
+      // library is still cold.
+      const db = await searchDbModels(env, {
+        task: 'all',
+        size: 'all',
+        tags: [],
+        query: '',
+        page,
+        limit,
+      });
+      models = db.models;
+      totalCount = db.totalCount;
+      hasNextPage = page * limit < totalCount;
+      if (db.totalCount === 0) {
+        const result = await withModelScope(env, (token) =>
+          searchModelScope(token, '', page, limit, task),
+        );
+        models = result.models.filter((model) => matchesFilters(model, task, size, tags));
+        totalCount = result.total ?? models.length;
+        hasNextPage = totalCount > page * limit;
+      } else {
+        needsUpsert = false;
+      }
     } else {
-      // task=all browse / featured: ModelScope upstream default list.
+      // Featured recommendations: curated upstream list, refreshed by cron.
       const result = await withModelScope(env, (token) =>
         searchModelScope(token, '', page, limit, task),
       );
