@@ -193,8 +193,11 @@ async function releaseToken(
 
 function outcomeFor(error: unknown): TokenOutcome {
   const status = error instanceof ModelScopeHttpError ? error.status : 503;
-  if (status === 401 || status === 403) return 'unauthorized';
-  if (status === 429) return 'rate_limited';
+  // Only 401 means the credential itself is dead. 403 is ModelScope's
+  // anti-abuse response to bursts (temporary, seconds to minutes); treating it
+  // as unauthorized permanently disabled the only token and froze the sync.
+  if (status === 401) return 'unauthorized';
+  if (status === 429 || status === 403) return 'rate_limited';
   return 'server_error';
 }
 
