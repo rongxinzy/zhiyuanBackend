@@ -4,3 +4,6 @@ node_modules/
 .env*
 !.env.example
 worker-configuration.d.ts
+
+# Private product and bid documents
+/private_doc/
