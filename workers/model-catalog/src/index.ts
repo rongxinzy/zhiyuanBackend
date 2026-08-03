@@ -717,8 +717,11 @@ async function enqueueTopModels(env: CatalogEnv): Promise<void> {
   const seen = new Set<string>();
   for (const task of ['all', 'vision'] as const) {
     for (let page = 1; page <= TOP_MODEL_SCAN_PAGES; page += 1) {
+      // Listing-only scan: hydrateDetails=false keeps the cron run well under
+      // the worker time budget — per-repo detail work happens later inside the
+      // hydrate-model queue consumer.
       const result = await withModelScope(env, (token) =>
-        searchModelScope(token, '', page, TOP_MODEL_SCAN_PAGE_SIZE, task),
+        searchModelScope(token, '', page, TOP_MODEL_SCAN_PAGE_SIZE, task, fetch, false),
       );
       for (const model of result.models) {
         if (seen.has(model.repoId)) continue;
