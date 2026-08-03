@@ -184,11 +184,19 @@ async function searchDbModels(
   };
 }
 
-async function upsertModels(env: CatalogEnv, models: CatalogModel[]): Promise<void> {
-  const verifiedModels = models.filter(isVerifiedGgufModel);
-  if (!verifiedModels.length) return;
+async function upsertModels(
+  env: CatalogEnv,
+  models: CatalogModel[],
+  requireVerified = true,
+): Promise<void> {
+  const accepted = requireVerified
+    ? models.filter(isVerifiedGgufModel)
+    : models.filter(
+        (model) => model.repoId && (model.metadataStatus === 'verified' || model.metadataStatus === 'pending'),
+      );
+  if (!accepted.length) return;
   const now = new Date().toISOString();
-  const statements = verifiedModels.map((model) =>
+  const statements = accepted.map((model) =>
     env.DB.prepare(
       `INSERT INTO models(id, repo_id, source, name, description, tags_json, sizes_json, capability_json, model_json, downloads, quality_score, trust_score, community_score, featured, featured_rank, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -229,7 +237,7 @@ async function upsertModels(env: CatalogEnv, models: CatalogModel[]): Promise<vo
   );
   await env.DB.batch(statements);
 
-  const fileStatements = verifiedModels.flatMap((model) =>
+  const fileStatements = accepted.flatMap((model) =>
     (model.files ?? []).map((file) =>
       env.DB.prepare(
         `INSERT INTO model_files(model_id, path, size_bytes, sha256, quantization, is_recommended, download_url)
@@ -656,14 +664,14 @@ const CATALOGUE_COVERAGE_THRESHOLD = 0.9;
  */
 async function enqueueCatalogueSync(env: CatalogEnv): Promise<void> {
   const first = await withModelScope(env, (token) =>
-    searchModelScope(token, '', 1, CATALOGUE_SYNC_PAGE_SIZE),
+    searchModelScope(token, '', 1, CATALOGUE_SYNC_PAGE_SIZE, 'all', fetch, false),
   );
   const upstreamTotal = first.total ?? first.models.length;
   if (upstreamTotal <= 0) return;
   const stored = await env.DB.prepare('SELECT COUNT(*) AS n FROM models').first<{ n: number }>();
   const coverage = stored?.n ? stored.n / upstreamTotal : 0;
   if (coverage >= CATALOGUE_COVERAGE_THRESHOLD) return;
-  await upsertModels(env, first.models);
+  await upsertModels(env, first.models, false);
   const totalPages = Math.min(
     CATALOGUE_SYNC_MAX_PAGES,
     Math.max(1, Math.ceil(upstreamTotal / CATALOGUE_SYNC_PAGE_SIZE)),
@@ -681,9 +689,9 @@ async function enqueueCatalogueSync(env: CatalogEnv): Promise<void> {
 
 async function syncCataloguePage(env: CatalogEnv, page: number): Promise<void> {
   const result = await withModelScope(env, (token) =>
-    searchModelScope(token, '', page, CATALOGUE_SYNC_PAGE_SIZE),
+    searchModelScope(token, '', page, CATALOGUE_SYNC_PAGE_SIZE, 'all', fetch, false),
   );
-  await upsertModels(env, result.models);
+  await upsertModels(env, result.models, false);
 }
 
 /**

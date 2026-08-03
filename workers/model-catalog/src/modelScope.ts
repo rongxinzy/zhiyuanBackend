@@ -601,6 +601,7 @@ export async function searchModelScope(
   pageSize = 20,
   task: CatalogTask = 'all',
   fetcher: typeof fetch = fetch,
+  hydrateDetails = true,
 ): Promise<{ models: CatalogModel[]; total?: number }> {
   const response = await fetcher(buildSearchUrl(query, pageNumber, pageSize, task), {
     headers: authHeaders(token),
@@ -611,6 +612,13 @@ export async function searchModelScope(
     .filter(
       (entry): entry is { raw: ModelScopeModel; normalized: CatalogModel } => Boolean(entry.normalized),
     );
+  if (!hydrateDetails) {
+    // Listing-only sync: return the summary records without per-model detail
+    // calls so a full catalogue backfill costs one upstream request per page.
+    // Entries stay 'pending' until hydrated on demand (install resolution or
+    // the hydrate-model queue).
+    return { models: summaries.map((entry) => entry.normalized), total: extracted.total };
+  }
   const hydrated = await mapConcurrent(
     summaries,
     MODEL_SCOPE_FETCH_CONCURRENCY,
