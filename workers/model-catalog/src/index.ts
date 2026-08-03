@@ -38,7 +38,16 @@ const MAX_JSON_BODY_BYTES = 128 * 1024;
 function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return Response.json(body, {
     status,
-    headers: { 'content-type': 'application/json; charset=utf-8', ...CORS, ...headers },
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      // The account-level edge cache rewrites max-age (observed 4h), which
+      // served stale catalogue snapshots to cache-key variants we do not
+      // control. Disable the CDN layer for catalogue data: worker-level D1
+      // caching already answers fast and the TTLs there are deliberate.
+      'CDN-Cache-Control': 'no-store',
+      ...CORS,
+      ...headers,
+    },
   });
 }
 
@@ -108,7 +117,10 @@ function matchesFilters(
   size: CatalogSize,
   tags: string[],
 ): boolean {
-  if (!isVerifiedGgufModel(model)) return false;
+  // No verified check here: the D1 library intentionally holds pending
+  // listing-only records (see enqueueCatalogueSync) that browse/category pages
+  // must still surface with a verify-and-install affordance. Upstream search
+  // results are already verified by searchModelScope before this filter runs.
   if (
     NON_GENERATIVE_GGUF_PATTERN.test(
       `${model.repoId} ${model.name} ${model.description} ${model.tags.join(' ')}`,
