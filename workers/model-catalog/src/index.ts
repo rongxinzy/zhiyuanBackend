@@ -120,7 +120,7 @@ function responseFromPageRow(
   try {
     const value = JSON.parse(row.response_json) as CatalogSearchResponse;
     if (!value || !Array.isArray(value.models)) return null;
-    const models = value.models.filter(isVerifiedGgufModel);
+    const models = value.models;
     return {
       ...value,
       models: sortOrder ? sortModelsByParameterCount(models, sortOrder) : models,
@@ -369,7 +369,7 @@ function searchCacheKey(input: {
   sortOrder: ParameterSortOrder;
 }): string {
   return [
-    input.featuredOnly ? 'featured-v2' : 'search-v2',
+    input.featuredOnly ? 'featured-v3' : 'search-v3',
     input.query.toLowerCase(),
     input.task,
     input.size,
