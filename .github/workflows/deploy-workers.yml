@@ -1,0 +1,73 @@
+name: Deploy Cloudflare Workers
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'migrations/**'
+      - 'workers/**'
+      - 'wrangler.jsonc'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/deploy-workers.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-workers-production
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check Workers
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check Workers
+        run: |
+          npm run check
+          npm run check:update
+          npm run check:catalog
+
+  deploy:
+    name: Deploy ${{ matrix.worker }}
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - worker: AnySearch gateway
+            config: wrangler.jsonc
+          - worker: Update service
+            config: workers/update/wrangler.jsonc
+          - worker: Model catalog
+            config: workers/model-catalog/wrangler.jsonc
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Deploy Worker
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE }}
+          accountId: 9ac9f96b683fc7350c779e5e8e082513
+          wranglerVersion: 4.114.0
+          command: deploy --config ${{ matrix.config }}
