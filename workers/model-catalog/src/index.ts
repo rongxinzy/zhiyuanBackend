@@ -659,12 +659,17 @@ async function hydrateModel(env: CatalogEnv, repoId: string): Promise<void> {
   if (model) await upsertModels(env, [model]);
 }
 
-const TOP_MODEL_SCAN_PAGES = 10;
+const TOP_MODEL_SCAN_PAGES = 5;
 const TOP_MODEL_SCAN_PAGE_SIZE = 50;
 const QUEUE_SEND_BATCH_LIMIT = 100;
 const CATALOGUE_SYNC_PAGE_SIZE = 50;
 const CATALOGUE_SYNC_MAX_PAGES = 300;
 const CATALOGUE_COVERAGE_THRESHOLD = 0.9;
+const QUEUE_UPSTREAM_PACE_MS = 1_000;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /**
  * Backfill the verified D1 library page by page until it covers the upstream
@@ -700,6 +705,9 @@ async function enqueueCatalogueSync(env: CatalogEnv): Promise<void> {
 }
 
 async function syncCataloguePage(env: CatalogEnv, page: number): Promise<void> {
+  // Gentle soft rate-limit: queue consumers run several batches in parallel
+  // and ModelScope throttles aggressive bursts, so pace each page request.
+  await wait(QUEUE_UPSTREAM_PACE_MS);
   const result = await withModelScope(env, (token) =>
     searchModelScope(token, '', page, CATALOGUE_SYNC_PAGE_SIZE, 'all', fetch, false),
   );
@@ -715,13 +723,21 @@ async function syncCataloguePage(env: CatalogEnv, page: number): Promise<void> {
 async function enqueueTopModels(env: CatalogEnv): Promise<void> {
   const messages: CatalogSyncMessage[] = [];
   const seen = new Set<string>();
+  // Only queue hydration for repos the library has not seen yet; blindly
+  // re-enqueueing every scanned repo each cron run burned through the Queues
+  // free-tier daily write quota (hydrateModel skips fresh rows anyway).
+  const rows = await env.DB.prepare('SELECT repo_id FROM models').all<{ repo_id: string }>();
+  const known = new Set((rows.results ?? []).map((row) => row.repo_id));
   for (const task of ['all', 'vision'] as const) {
     for (let page = 1; page <= TOP_MODEL_SCAN_PAGES; page += 1) {
+      // Listing-only scan: hydrateDetails=false keeps the cron run well under
+      // the worker time budget — per-repo detail work happens later inside the
+      // hydrate-model queue consumer.
       const result = await withModelScope(env, (token) =>
-        searchModelScope(token, '', page, TOP_MODEL_SCAN_PAGE_SIZE, task),
+        searchModelScope(token, '', page, TOP_MODEL_SCAN_PAGE_SIZE, task, fetch, false),
       );
       for (const model of result.models) {
-        if (seen.has(model.repoId)) continue;
+        if (seen.has(model.repoId) || known.has(model.repoId)) continue;
         seen.add(model.repoId);
         messages.push({ kind: 'hydrate-model', repoId: model.repoId });
       }
