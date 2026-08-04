@@ -39,6 +39,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate root Worker types
+        run: npm run types
+
       - name: Type-check Workers
         run: |
           npm run check
