@@ -12,7 +12,8 @@ describe('catalog parameter sorting', () => {
       { name: 'Unknown', repoId: 'demo/unknown', downloads: 999 },
     ] as CatalogModel[];
 
-    const sorted = sortModelsByParameterCount(models);
+    const sorted = sortModelsByParameterCount(models, 'asc');
+    const descending = sortModelsByParameterCount(models, 'desc');
     console.table(sorted.map(({ name, parameterCount, repoId }) => ({ name, parameterCount, repoId })));
 
     expect(sorted.map((model) => model.name)).toEqual([
@@ -22,5 +23,11 @@ describe('catalog parameter sorting', () => {
       'Unknown',
     ]);
     expect(sorted.at(-1)?.parameterCount).toBeUndefined();
+    expect(descending.map((model) => model.name)).toEqual([
+      'Qwen 7B',
+      'Qwen 3B',
+      'Qwen 0.5B',
+      'Unknown',
+    ]);
   });
 });
