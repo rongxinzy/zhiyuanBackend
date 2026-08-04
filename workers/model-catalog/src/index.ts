@@ -663,7 +663,10 @@ const TOP_MODEL_SCAN_PAGES = 5;
 const TOP_MODEL_SCAN_PAGE_SIZE = 50;
 const QUEUE_SEND_BATCH_LIMIT = 100;
 const CATALOGUE_SYNC_PAGE_SIZE = 50;
-const CATALOGUE_SYNC_MAX_PAGES = 300;
+// ModelScope caps search paging at ~60-70 pages (observed HTTP 403 beyond),
+// regardless of filters or sort. Sync only the pages the API can actually
+// serve; deeper pages would retry into 403 loops forever.
+const CATALOGUE_SYNC_MAX_PAGES = 60;
 const CATALOGUE_COVERAGE_THRESHOLD = 0.9;
 const QUEUE_UPSTREAM_PACE_MS = 1_000;
 
@@ -686,7 +689,13 @@ async function enqueueCatalogueSync(env: CatalogEnv): Promise<void> {
   const upstreamTotal = first.total ?? first.models.length;
   if (upstreamTotal <= 0) return;
   const stored = await env.DB.prepare('SELECT COUNT(*) AS n FROM models').first<{ n: number }>();
-  const coverage = stored?.n ? stored.n / upstreamTotal : 0;
+  // Coverage is measured against the reachable catalogue (page-depth cap),
+  // not the upstream total — otherwise the sweep would re-fire forever.
+  const reachableTotal = Math.min(
+    upstreamTotal,
+    CATALOGUE_SYNC_MAX_PAGES * CATALOGUE_SYNC_PAGE_SIZE,
+  );
+  const coverage = stored?.n ? stored.n / reachableTotal : 0;
   if (coverage >= CATALOGUE_COVERAGE_THRESHOLD) return;
   await upsertModels(env, first.models, false);
   const totalPages = Math.min(

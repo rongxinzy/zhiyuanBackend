@@ -540,9 +540,13 @@ export function buildSearchUrl(
   task: CatalogTask = 'all',
 ): string {
   const url = new URL(`${MODEL_SCOPE_ENDPOINT}/openapi/v1/models`);
+  // snake_case paging params page correctly; camelCase PageNumber is silently
+  // ignored (returns the first page repeatedly). filter.library value must be
+  // uppercase "GGUF" — lowercase triggered HTTP 403 during probing. ModelScope
+  // also rate-limits bursts (403), so callers must keep requests spaced out.
   if (query.trim()) url.searchParams.set('search', query.trim());
   url.searchParams.set('sort', 'downloads');
-  url.searchParams.set('filter.library', 'gguf');
+  url.searchParams.set('filter.library', 'GGUF');
   // Vision-language models use the image-text-to-text pipeline. A hard-coded
   // text-generation filter silently excludes them from upstream results, so
   // the pipeline filter follows the requested task.
