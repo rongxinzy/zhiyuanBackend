@@ -14,7 +14,7 @@ import type {
   CatalogSize,
   CatalogTask,
 } from './types';
-import { sortModelsByParameterCount } from './sort';
+import { sortModelsByParameterCount, type ParameterSortOrder } from './sort';
 
 type DbModelRow = { model_json: string; updated_at?: string };
 type DbPageRow = { response_json: string; checked_at: string; stale_after: string };
@@ -84,6 +84,16 @@ function parseSize(value: string | null): CatalogSize {
   return allowed.includes(value as CatalogSize) ? (value as CatalogSize) : 'all';
 }
 
+function parseSortBy(value: string | null): ParameterSortOrder {
+  const normalized = (value ?? 'asc').trim().toLowerCase();
+  return normalized === 'desc' ||
+    normalized === 'descending' ||
+    normalized === 'parameter_desc' ||
+    normalized === 'parameter_descending'
+    ? 'desc'
+    : 'asc';
+}
+
 function upstreamQuery(query: string, _task: CatalogTask): string {
   // Task filtering is handled by the upstream pipeline filter plus the local
   // capability check in matchesFilters. Appending the task keyword to the
@@ -105,7 +115,7 @@ function modelFromRow(row: DbModelRow): CatalogModel | null {
 
 function responseFromPageRow(
   row: DbPageRow,
-  sortByParameterCount = false,
+  sortOrder?: ParameterSortOrder,
 ): CatalogSearchResponse | null {
   try {
     const value = JSON.parse(row.response_json) as CatalogSearchResponse;
@@ -113,7 +123,7 @@ function responseFromPageRow(
     const models = value.models.filter(isVerifiedGgufModel);
     return {
       ...value,
-      models: sortByParameterCount ? sortModelsByParameterCount(models) : models,
+      models: sortOrder ? sortModelsByParameterCount(models, sortOrder) : models,
     };
   } catch {
     return null;
@@ -165,6 +175,7 @@ async function searchDbModels(
     query: string;
     page: number;
     limit: number;
+    sortOrder: ParameterSortOrder;
   },
 ): Promise<{ models: CatalogModel[]; totalCount: number }> {
   // task/size are whitelist enums from parseTask/parseSize, safe to inline.
@@ -199,7 +210,7 @@ async function searchDbModels(
         .toLowerCase();
       return haystack.includes(keyword);
     });
-  const sorted = sortModelsByParameterCount(filtered);
+  const sorted = sortModelsByParameterCount(filtered, input.sortOrder);
   return {
     models: sorted.slice((input.page - 1) * input.limit, input.page * input.limit),
     totalCount: filtered.length,
@@ -309,7 +320,11 @@ async function upsertModels(
   if (fileStatements.length) await env.DB.batch(fileStatements);
 }
 
-async function readCatalogPage(env: CatalogEnv, cacheKey: string): Promise<{
+async function readCatalogPage(
+  env: CatalogEnv,
+  cacheKey: string,
+  sortOrder?: ParameterSortOrder,
+): Promise<{
   response: CatalogSearchResponse;
   fresh: boolean;
 } | null> {
@@ -319,7 +334,7 @@ async function readCatalogPage(env: CatalogEnv, cacheKey: string): Promise<{
     .bind(cacheKey)
     .first<DbPageRow>();
   if (!row) return null;
-  const response = responseFromPageRow(row, !cacheKey.startsWith('featured-v2|'));
+  const response = responseFromPageRow(row, sortOrder);
   return response ? { response, fresh: Date.parse(row.stale_after) > Date.now() } : null;
 }
 
@@ -351,6 +366,7 @@ function searchCacheKey(input: {
   limit: number;
   page: number;
   featuredOnly: boolean;
+  sortOrder: ParameterSortOrder;
 }): string {
   return [
     input.featuredOnly ? 'featured-v2' : 'search-v2',
@@ -360,6 +376,7 @@ function searchCacheKey(input: {
     [...input.tags].sort().join(','),
     input.limit,
     input.page,
+    input.sortOrder,
   ].join('|');
 }
 
@@ -384,9 +401,15 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
   );
   const page = Math.max(1, Number(url.searchParams.get('page')) || 1);
   const featuredOnly = url.searchParams.get('featured') === '1';
+  const sortOrder = parseSortBy(url.searchParams.get('sortby'));
+  const sortFeatured = url.searchParams.has('sortby');
   const forceRefresh = url.searchParams.get('refresh') === '1';
-  const cacheKey = searchCacheKey({ query, task, size, tags, limit, page, featuredOnly });
-  const cached = await readCatalogPage(env, cacheKey);
+  const cacheKey = searchCacheKey({ query, task, size, tags, limit, page, featuredOnly, sortOrder });
+  const cached = await readCatalogPage(
+    env,
+    cacheKey,
+    sortFeatured || !featuredOnly ? sortOrder : undefined,
+  );
   if (cached?.fresh && !forceRefresh) {
     return json(cached.response, 200, {
       'cache-control': 'public, max-age=60, s-maxage=300',
@@ -405,7 +428,7 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
       // Keyword search: answer from the verified D1 GGUF library so totalCount
       // counts installable models only; fall back to the upstream search when
       // the library has not seen any matching model yet.
-      const db = await searchDbModels(env, { task, size, tags, query, page, limit });
+      const db = await searchDbModels(env, { task, size, tags, query, page, limit, sortOrder });
       if (db.totalCount > 0) {
         models = db.models;
         totalCount = db.totalCount;
@@ -417,13 +440,14 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         );
         models = sortModelsByParameterCount(
           result.models.filter((model) => matchesFilters(model, task, size, tags)),
+          sortOrder,
         );
         totalCount = result.total ?? models.length;
         hasNextPage = totalCount > page * limit;
       }
     } else if (!featuredOnly && (task !== 'all' || size !== 'all' || tags.length > 0)) {
       // Category page: answer from the D1 model library by capability/size/tags.
-      const db = await searchDbModels(env, { task, size, tags, query: '', page, limit });
+      const db = await searchDbModels(env, { task, size, tags, query: '', page, limit, sortOrder });
       models = db.models;
       totalCount = db.totalCount;
       hasNextPage = page * limit < totalCount;
@@ -434,6 +458,7 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         );
         models = sortModelsByParameterCount(
           result.models.filter((model) => matchesFilters(model, task, size, tags)),
+          sortOrder,
         );
         totalCount = result.total ?? models.length;
         hasNextPage = totalCount > page * limit;
@@ -453,6 +478,7 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         query: '',
         page,
         limit,
+        sortOrder,
       });
       models = db.models;
       totalCount = db.totalCount;
@@ -463,6 +489,7 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         );
         models = sortModelsByParameterCount(
           result.models.filter((model) => matchesFilters(model, task, size, tags)),
+          sortOrder,
         );
         totalCount = result.total ?? models.length;
         hasNextPage = totalCount > page * limit;
@@ -476,13 +503,18 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         const result = await withModelScope(env, (token) =>
           searchModelScope(token, '', page, limit, task),
         );
-        models = result.models.filter((model) => matchesFilters(model, task, size, tags));
+        const featuredModels = result.models.filter((model) =>
+          matchesFilters(model, task, size, tags),
+        );
+        models = sortFeatured
+          ? sortModelsByParameterCount(featuredModels, sortOrder)
+          : featuredModels;
         totalCount = featuredOnly ? models.length : (result.total ?? models.length);
         hasNextPage = !featuredOnly && totalCount > page * limit;
       } catch (error) {
         const db = await searchFeaturedDbModels(env, { task, size, tags, page, limit });
         if (!db.totalCount) throw error;
-        models = db.models;
+        models = sortFeatured ? sortModelsByParameterCount(db.models, sortOrder) : db.models;
         totalCount = db.totalCount;
         hasNextPage = page * limit < totalCount;
         needsUpsert = false;
@@ -685,6 +717,7 @@ async function refreshFeatured(env: CatalogEnv): Promise<void> {
       limit: 24,
       page: 1,
       featuredOnly: true,
+      sortOrder: 'asc',
     }),
     response,
     FEATURED_CACHE_TTL_SECONDS,
