@@ -14,6 +14,7 @@ import type {
   CatalogSize,
   CatalogTask,
 } from './types';
+import { sortModelsByParameterCount } from './sort';
 
 type DbModelRow = { model_json: string; updated_at?: string };
 type DbPageRow = { response_json: string; checked_at: string; stale_after: string };
@@ -101,11 +102,19 @@ function modelFromRow(row: DbModelRow): CatalogModel | null {
   }
 }
 
-function responseFromPageRow(row: DbPageRow): CatalogSearchResponse | null {
+
+function responseFromPageRow(
+  row: DbPageRow,
+  sortByParameterCount = false,
+): CatalogSearchResponse | null {
   try {
     const value = JSON.parse(row.response_json) as CatalogSearchResponse;
     if (!value || !Array.isArray(value.models)) return null;
-    return { ...value, models: value.models.filter(isVerifiedGgufModel) };
+    const models = value.models.filter(isVerifiedGgufModel);
+    return {
+      ...value,
+      models: sortByParameterCount ? sortModelsByParameterCount(models) : models,
+    };
   } catch {
     return null;
   }
@@ -190,8 +199,9 @@ async function searchDbModels(
         .toLowerCase();
       return haystack.includes(keyword);
     });
+  const sorted = sortModelsByParameterCount(filtered);
   return {
-    models: filtered.slice((input.page - 1) * input.limit, input.page * input.limit),
+    models: sorted.slice((input.page - 1) * input.limit, input.page * input.limit),
     totalCount: filtered.length,
   };
 }
@@ -284,7 +294,7 @@ async function readCatalogPage(env: CatalogEnv, cacheKey: string): Promise<{
     .bind(cacheKey)
     .first<DbPageRow>();
   if (!row) return null;
-  const response = responseFromPageRow(row);
+  const response = responseFromPageRow(row, !cacheKey.startsWith('featured-v2|'));
   return response ? { response, fresh: Date.parse(row.stale_after) > Date.now() } : null;
 }
 
@@ -318,7 +328,7 @@ function searchCacheKey(input: {
   featuredOnly: boolean;
 }): string {
   return [
-    input.featuredOnly ? 'featured' : 'search',
+    input.featuredOnly ? 'featured-v2' : 'search-v2',
     input.query.toLowerCase(),
     input.task,
     input.size,
@@ -379,7 +389,9 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         const result = await withModelScope(env, (token) =>
           searchModelScope(token, query, page, limit, task),
         );
-        models = result.models.filter((model) => matchesFilters(model, task, size, tags));
+        models = sortModelsByParameterCount(
+          result.models.filter((model) => matchesFilters(model, task, size, tags)),
+        );
         totalCount = result.total ?? models.length;
         hasNextPage = totalCount > page * limit;
       }
@@ -394,7 +406,9 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         const result = await withModelScope(env, (token) =>
           searchModelScope(token, '', page, limit, task),
         );
-        models = result.models.filter((model) => matchesFilters(model, task, size, tags));
+        models = sortModelsByParameterCount(
+          result.models.filter((model) => matchesFilters(model, task, size, tags)),
+        );
         totalCount = result.total ?? models.length;
         hasNextPage = totalCount > page * limit;
       } else {
@@ -421,7 +435,9 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         const result = await withModelScope(env, (token) =>
           searchModelScope(token, '', page, limit, task),
         );
-        models = result.models.filter((model) => matchesFilters(model, task, size, tags));
+        models = sortModelsByParameterCount(
+          result.models.filter((model) => matchesFilters(model, task, size, tags)),
+        );
         totalCount = result.total ?? models.length;
         hasNextPage = totalCount > page * limit;
       } else {
