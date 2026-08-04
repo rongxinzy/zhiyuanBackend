@@ -692,7 +692,7 @@ export function createCatalogResponse(
   warning?: string,
 ): CatalogSearchResponse {
   return {
-    models: models.filter(isVerifiedGgufModel),
+    models,
     totalCount,
     warning,
     source: 'cloud-catalog',
