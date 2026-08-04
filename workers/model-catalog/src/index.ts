@@ -206,6 +206,31 @@ async function searchDbModels(
   };
 }
 
+async function searchFeaturedDbModels(
+  env: CatalogEnv,
+  input: {
+    task: CatalogTask;
+    size: CatalogSize;
+    tags: string[];
+    page: number;
+    limit: number;
+  },
+): Promise<{ models: CatalogModel[]; totalCount: number }> {
+  const rows = await env.DB.prepare(
+    `SELECT model_json FROM models
+     WHERE featured = 1
+     ORDER BY COALESCE(featured_rank, 2147483647), downloads DESC`,
+  ).all<{ model_json: string }>();
+  const filtered = (rows.results ?? [])
+    .map(modelFromRow)
+    .filter((model): model is CatalogModel =>
+      Boolean(model && matchesFilters(model, input.task, input.size, input.tags)),
+    );
+  return {
+    models: filtered.slice((input.page - 1) * input.limit, input.page * input.limit),
+    totalCount: filtered.length,
+  };
+}
 async function upsertModels(
   env: CatalogEnv,
   models: CatalogModel[],
@@ -374,6 +399,7 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
     let totalCount = 0;
     let hasNextPage = false;
     let needsUpsert = true;
+    let warning: string | undefined;
 
     if (query.trim()) {
       // Keyword search: answer from the verified D1 GGUF library so totalCount
@@ -444,13 +470,24 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         needsUpsert = false;
       }
     } else {
-      // Featured recommendations: curated upstream list, refreshed by cron.
-      const result = await withModelScope(env, (token) =>
-        searchModelScope(token, '', page, limit, task),
-      );
-      models = result.models.filter((model) => matchesFilters(model, task, size, tags));
-      totalCount = featuredOnly ? models.length : (result.total ?? models.length);
-      hasNextPage = !featuredOnly && totalCount > page * limit;
+      // Featured recommendations prefer the upstream curated list, but fall
+      // back to the last curated D1 snapshot when ModelScope is unavailable.
+      try {
+        const result = await withModelScope(env, (token) =>
+          searchModelScope(token, '', page, limit, task),
+        );
+        models = result.models.filter((model) => matchesFilters(model, task, size, tags));
+        totalCount = featuredOnly ? models.length : (result.total ?? models.length);
+        hasNextPage = !featuredOnly && totalCount > page * limit;
+      } catch (error) {
+        const db = await searchFeaturedDbModels(env, { task, size, tags, page, limit });
+        if (!db.totalCount) throw error;
+        models = db.models;
+        totalCount = db.totalCount;
+        hasNextPage = page * limit < totalCount;
+        needsUpsert = false;
+        warning = 'ModelScope temporarily unavailable; serving the last featured catalogue.';
+      }
     }
 
     if (featuredOnly) {
@@ -462,7 +499,7 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
     }
     if (needsUpsert) await upsertModels(env, models);
     const response: CatalogSearchResponse = {
-      ...createCatalogResponse(models, totalCount),
+      ...createCatalogResponse(models, totalCount, warning),
       ...(hasNextPage ? { nextPageNumber: page + 1 } : {}),
       source: 'modelscope',
     };
@@ -470,7 +507,7 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
       env,
       cacheKey,
       response,
-      featuredOnly ? FEATURED_CACHE_TTL_SECONDS : SEARCH_CACHE_TTL_SECONDS,
+      warning ? 300 : (featuredOnly ? FEATURED_CACHE_TTL_SECONDS : SEARCH_CACHE_TTL_SECONDS),
     );
     return json(response, 200, {
       'cache-control': featuredOnly
