@@ -196,13 +196,7 @@ async function searchDbModels(
       }
     })
     .filter((model): model is CatalogModel => {
-      if (
-        !model ||
-        !isVerifiedGgufModel(model) ||
-        !matchesFilters(model, input.task, input.size, input.tags)
-      ) {
-        return false;
-      }
+      if (!model || !matchesFilters(model, input.task, input.size, input.tags)) return false;
       if (!keyword) return true;
       const haystack = [
         model.repoId,
@@ -375,7 +369,7 @@ function searchCacheKey(input: {
   sortOrder: ParameterSortOrder;
 }): string {
   return [
-    input.featuredOnly ? 'featured-v4' : 'search-v4',
+    input.featuredOnly ? 'featured-v3' : 'search-v3',
     input.query.toLowerCase(),
     input.task,
     input.size,
