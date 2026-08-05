@@ -98,7 +98,7 @@ export type CatalogSearchResponse = {
   totalCount: number;
   nextPageNumber?: number;
   warning?: string;
-  source: 'cloud-catalog' | 'modelscope' | 'curated';
+  source: 'cloud-catalog' | 'd1' | 'modelscope' | 'curated';
   catalogUpdatedAt?: string;
   scoreVersion: string;
 };
