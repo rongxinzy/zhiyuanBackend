@@ -15,6 +15,7 @@ import type {
   CatalogTask,
 } from './types';
 import { sortModelsByParameterCount, type ParameterSortOrder } from './sort';
+import { createLegacySearchResponse } from './legacy';
 
 type DbModelRow = { model_json: string; updated_at?: string };
 type DbPageRow = { response_json: string; checked_at: string; stale_after: string };
@@ -558,6 +559,50 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
   }
 }
 
+async function oldSearch(env: CatalogEnv, request: Request): Promise<Response> {
+  const url = new URL(request.url);
+  const query = normalizeQuery(url.searchParams.get('search') ?? url.searchParams.get('q'));
+  const task = parseTask(url.searchParams.get('task'));
+  const size = parseSize(url.searchParams.get('size'));
+  const tags = parseList(url.searchParams.get('tags'));
+  const pageSize = Math.min(
+    MAX_SEARCH_LIMIT,
+    Math.max(1, Number(url.searchParams.get('page_size') ?? url.searchParams.get('limit') ?? 20) || 20),
+  );
+  const pageNumber = Math.max(
+    1,
+    Number(url.searchParams.get('page_number') ?? url.searchParams.get('page') ?? 1) || 1,
+  );
+  const sortOrder = parseSortBy(url.searchParams.get('sortby'));
+  const db = await searchDbModels(env, {
+    task,
+    size,
+    tags,
+    query,
+    page: pageNumber,
+    limit: pageSize,
+    sortOrder,
+  });
+
+  let models = db.models;
+  let total = db.totalCount;
+  if (total === 0) {
+    const result = await withModelScope(env, (token) =>
+      searchModelScope(token, query, pageNumber, pageSize, task),
+    );
+    models = sortModelsByParameterCount(
+      result.models.filter((model) => matchesFilters(model, task, size, tags)),
+      sortOrder,
+    );
+    total = result.total ?? models.length;
+    if (models.length) await upsertModels(env, models);
+  }
+
+  return json(createLegacySearchResponse(models, total, pageNumber, pageSize), 200, {
+    'cache-control': 'public, max-age=60, s-maxage=300',
+    'x-catalog-cache': 'oldsearch',
+  });
+}
 async function bootstrap(env: CatalogEnv, request: Request): Promise<Response> {
   const url = new URL(request.url);
   url.pathname = '/v1/catalog/search';
@@ -897,6 +942,9 @@ async function route(request: Request, env: CatalogEnv): Promise<Response> {
   if (request.method === 'GET' && url.pathname === '/v1/catalog/bootstrap') {
     return bootstrap(env, request);
   }
+  if (request.method === 'GET' && url.pathname === '/v1/catalog/oldsearch') {
+    return oldSearch(env, request);
+  }
   if (request.method === 'GET' && url.pathname === '/v1/catalog/search') {
     return search(env, request);
   }
@@ -946,6 +994,7 @@ export default {
         request.method === 'GET' &&
         (url.pathname === '/v1/catalog/bootstrap' ||
           url.pathname === '/v1/catalog/search' ||
+          url.pathname === '/v1/catalog/oldsearch' ||
           /^\/v1\/catalog\/models\/[^/]+\/[^/]+(?:\/files)?$/.test(url.pathname));
       const forceRefresh = url.searchParams.get('refresh') === '1';
       const cacheKey = isCatalogGet ? edgeCacheRequest(request) : null;

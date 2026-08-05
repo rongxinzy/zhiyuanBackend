@@ -17,3 +17,11 @@ The desktop never receives or stores a ModelScope catalogue token and has no dir
 The desktop search API supports sortby=asc and sortby=desc (also parameter_asc/parameter_desc) to order models by parameter count; the default is ascending and models without a parameter count are last. The desktop keeps three result contexts separate: featured recommendations (`featured=1`), free-text search (`q=...`), and task/category browsing (`task=...`). Recommendations are a finite curated result with no misleading upstream pagination. The `全部模型` browse path requests ModelScope page-by-page with `limit` and `page`, returning the upstream `totalCount`/`nextPageNumber`. Every upstream request is restricted to GGUF text-generation repositories; the normalizer additionally rejects embeddings, rerankers, sharded files and records without a checksum-backed single-file GGUF.
 
 The Worker owns ModelScope search/detail/file metadata, token rotation, rate-limit cooldown, D1 stale fallback and edge caching. It never proxies model bytes. The desktop downloads the selected GGUF directly, verifies byte size, SHA-256, GGUF magic/version, and only treats a real local runtime probe as final compatibility evidence.
+
+## Legacy search compatibility
+
+GET /v1/catalog/oldsearch accepts the legacy query names search, page_number and page_size. The current names q, page and limit are also accepted. Results are returned under Data.Models; each model includes ModelInfos.gguf.gguf_file_list with the GGUF file name, size and sha256 fields. sortby=asc or sortby=desc controls parameter-count ordering.
+
+## Refresh pending model metadata
+
+`workers/model-catalog/scripts/refresh-unverified-d1.sh` reads the local `claudflare` configuration, calls the public ModelScope legacy detail API, and refreshes pending `models` rows plus `model_files` in bounded batches. Set `REFRESH_BATCH_LIMIT`, `REFRESH_CONCURRENCY`, or `REFRESH_LOG` to adjust the run.
