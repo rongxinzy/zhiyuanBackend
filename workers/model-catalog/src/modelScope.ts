@@ -700,3 +700,58 @@ export function createCatalogResponse(
     catalogUpdatedAt: new Date().toISOString(),
   };
 }
+
+export function buildLegacyModelUrl(owner: string, repo: string): string {
+  return `${MODEL_SCOPE_ENDPOINT}/api/v1/models/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+}
+
+export function extractLegacyModelFiles(payload: unknown): ModelScopeFile[] {
+  if (!isRecord(payload)) return [];
+  const data = isRecord(payload.Data) ? payload.Data : isRecord(payload.data) ? payload.data : payload;
+  const modelInfos = isRecord(data.ModelInfos) ? data.ModelInfos : isRecord(data.modelInfos) ? data.modelInfos : undefined;
+  const gguf = modelInfos && isRecord(modelInfos.gguf) ? modelInfos.gguf : modelInfos && isRecord(modelInfos.GGUF) ? modelInfos.GGUF : undefined;
+  const groups = list(gguf?.gguf_file_list ?? gguf?.GgufFileList ?? gguf?.file_list);
+  return groups.flatMap((group) => {
+    if (!isRecord(group)) return [];
+    const files = list(group.file_info ?? group.FileInfo ?? group.files);
+    return files
+      .filter(isRecord)
+      .map((file) => ({
+        name: file.name ?? file.Name,
+        size: file.size ?? file.Size,
+        sha256: file.sha256 ?? file.Sha256,
+        revision: data.Revision ?? data.revision,
+      }))
+      .filter((file) => Boolean(file.name));
+  }) as ModelScopeFile[];
+}
+
+export async function getModelScopeLegacyFiles(
+  token: string | undefined,
+  owner: string,
+  repo: string,
+  fetcher: typeof fetch = fetch,
+): Promise<ModelScopeFile[]> {
+  const response = await fetcher(buildLegacyModelUrl(owner, repo), {
+    headers: authHeaders(token),
+  });
+  return extractLegacyModelFiles(await readJson(response));
+}
+
+export function normalizeStoredModelWithFiles(
+  stored: CatalogModel,
+  rawFiles: ModelScopeFile[],
+): CatalogModel | null {
+  return normalizeModel(
+    {
+      ...stored,
+      id: stored.id,
+      repo_id: stored.repoId,
+      display_name: stored.name,
+      files: rawFiles,
+    } as ModelScopeModel,
+    Boolean(stored.isFeatured),
+    stored.featuredRank,
+    false,
+  );
+}
