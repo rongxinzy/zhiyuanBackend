@@ -18,10 +18,6 @@ The desktop search API supports sortby=asc and sortby=desc (also parameter_asc/p
 
 The Worker owns ModelScope search/detail/file metadata, token rotation, rate-limit cooldown, D1 stale fallback and edge caching. It never proxies model bytes. The desktop downloads the selected GGUF directly, verifies byte size, SHA-256, GGUF magic/version, and only treats a real local runtime probe as final compatibility evidence.
 
-## Legacy search compatibility
-
-GET /v1/catalog/oldsearch accepts the legacy query names search, page_number and page_size. The current names q, page and limit are also accepted. Results are returned under Data.Models; each model includes ModelInfos.gguf.gguf_file_list with the GGUF file name, size and sha256 fields. sortby=asc or sortby=desc controls parameter-count ordering.
-
 ## Refresh pending model metadata
 
 `workers/model-catalog/scripts/refresh-unverified-d1.sh` reads the local `claudflare` configuration, calls the public ModelScope legacy detail API, and refreshes pending `models` rows plus `model_files` in bounded batches. Set `REFRESH_BATCH_LIMIT`, `REFRESH_CONCURRENCY`, or `REFRESH_LOG` to adjust the run.
