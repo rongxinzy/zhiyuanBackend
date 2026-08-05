@@ -422,29 +422,13 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
     let models: CatalogModel[] = [];
     let totalCount = 0;
     let hasNextPage = false;
-    let needsUpsert = true;
-    let warning: string | undefined;
-
     if (query.trim()) {
-      // Keyword search: answer from the verified D1 GGUF library so totalCount
-      // counts installable models only; fall back to the upstream search when
-      // the library has not seen any matching model yet.
+      // Keyword search stays local; an unknown keyword returns an empty page.
       const db = await searchDbModels(env, { task, size, tags, query, page, limit, sortOrder });
       if (db.totalCount > 0) {
         models = db.models;
         totalCount = db.totalCount;
         hasNextPage = page * limit < totalCount;
-        needsUpsert = false;
-      } else {
-        const result = await withModelScope(env, (token) =>
-          searchModelScope(token, query, page, limit, task),
-        );
-        models = sortModelsByParameterCount(
-          result.models.filter((model) => matchesFilters(model, task, size, tags)),
-          sortOrder,
-        );
-        totalCount = result.total ?? models.length;
-        hasNextPage = totalCount > page * limit;
       }
     } else if (!featuredOnly && (task !== 'all' || size !== 'all' || tags.length > 0)) {
       // Category page: answer from the D1 model library by capability/size/tags.
@@ -452,26 +436,9 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
       models = db.models;
       totalCount = db.totalCount;
       hasNextPage = page * limit < totalCount;
-      if (db.totalCount === 0) {
-        // Cold-start fallback while the library has not seen this category yet.
-        const result = await withModelScope(env, (token) =>
-          searchModelScope(token, '', page, limit, task),
-        );
-        models = sortModelsByParameterCount(
-          result.models.filter((model) => matchesFilters(model, task, size, tags)),
-          sortOrder,
-        );
-        totalCount = result.total ?? models.length;
-        hasNextPage = totalCount > page * limit;
-      } else {
-        needsUpsert = false;
-      }
     } else if (!featuredOnly) {
       // Browse (no query, no filters): answer from the verified D1 library —
-      // every catalogue page is served without touching the upstream, which
-      // is what keeps first paint and pagination fast even when ModelScope
-      // rate-limits or is unreachable. Fall back to upstream only while the
-      // library is still cold.
+      // Every catalogue page is served without touching the upstream.
       const db = await searchDbModels(env, {
         task: 'all',
         size: 'all',
@@ -484,43 +451,12 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
       models = db.models;
       totalCount = db.totalCount;
       hasNextPage = page * limit < totalCount;
-      if (db.totalCount === 0) {
-        const result = await withModelScope(env, (token) =>
-          searchModelScope(token, '', page, limit, task),
-        );
-        models = sortModelsByParameterCount(
-          result.models.filter((model) => matchesFilters(model, task, size, tags)),
-          sortOrder,
-        );
-        totalCount = result.total ?? models.length;
-        hasNextPage = totalCount > page * limit;
-      } else {
-        needsUpsert = false;
-      }
     } else {
-      // Featured recommendations prefer the upstream curated list, but fall
-      // back to the last curated D1 snapshot when ModelScope is unavailable.
-      try {
-        const result = await withModelScope(env, (token) =>
-          searchModelScope(token, '', page, limit, task),
-        );
-        const featuredModels = result.models.filter((model) =>
-          matchesFilters(model, task, size, tags),
-        );
-        models = sortFeatured
-          ? sortModelsByParameterCount(featuredModels, sortOrder)
-          : featuredModels;
-        totalCount = featuredOnly ? models.length : (result.total ?? models.length);
-        hasNextPage = !featuredOnly && totalCount > page * limit;
-      } catch (error) {
-        const db = await searchFeaturedDbModels(env, { task, size, tags, page, limit });
-        if (!db.totalCount) throw error;
-        models = sortFeatured ? sortModelsByParameterCount(db.models, sortOrder) : db.models;
-        totalCount = db.totalCount;
-        hasNextPage = page * limit < totalCount;
-        needsUpsert = false;
-        warning = 'ModelScope temporarily unavailable; serving the last featured catalogue.';
-      }
+      // Featured recommendations use the last curated D1 snapshot only.
+      const db = await searchFeaturedDbModels(env, { task, size, tags, page, limit });
+      models = sortFeatured ? sortModelsByParameterCount(db.models, sortOrder) : db.models;
+      totalCount = db.totalCount;
+      hasNextPage = page * limit < totalCount;
     }
 
     if (featuredOnly) {
@@ -530,17 +466,16 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         featuredRank: index + 1,
       }));
     }
-    if (needsUpsert) await upsertModels(env, models);
     const response: CatalogSearchResponse = {
-      ...createCatalogResponse(models, totalCount, warning),
+      ...createCatalogResponse(models, totalCount),
       ...(hasNextPage ? { nextPageNumber: page + 1 } : {}),
-      source: 'modelscope',
+      source: 'd1',
     };
     await writeCatalogPage(
       env,
       cacheKey,
       response,
-      warning ? 300 : (featuredOnly ? FEATURED_CACHE_TTL_SECONDS : SEARCH_CACHE_TTL_SECONDS),
+      featuredOnly ? FEATURED_CACHE_TTL_SECONDS : SEARCH_CACHE_TTL_SECONDS,
     );
     return json(response, 200, {
       'cache-control': featuredOnly
