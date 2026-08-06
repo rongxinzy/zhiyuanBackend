@@ -6,6 +6,7 @@
   "scripts": {
     "check": "node ./node_modules/typescript/bin/tsc --noEmit",
     "check:update": "node ./node_modules/typescript/bin/tsc --project workers/update/tsconfig.json --noEmit",
+    "test:update": "node --experimental-strip-types --test workers/update/tests/*.test.ts",
     "check:catalog": "node ./node_modules/typescript/bin/tsc --project workers/model-catalog/tsconfig.json --noEmit",
     "deploy": "node ./node_modules/wrangler/bin/wrangler.js deploy",
     "deploy:update": "node ./node_modules/wrangler/bin/wrangler.js deploy --config workers/update/wrangler.jsonc",
