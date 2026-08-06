@@ -100,9 +100,13 @@ describe('update Worker dual protocol', () => {
       'channels/stable.json': JSON.stringify({ schemaVersion: 1, manifests: [signedManifest(target)] }),
     });
     const originalConsoleError = console.error;
-    console.error = () => undefined;
-    const legacy = await fetchUpdate('https://updates.example/v1/updates/latest?channel=stable&platform=win32&arch=x64&variant=lite', unsafePointer.env);
-    console.error = originalConsoleError;
+    let legacy: Response;
+    try {
+      console.error = () => undefined;
+      legacy = await fetchUpdate('https://updates.example/v1/updates/latest?channel=stable&platform=win32&arch=x64&variant=lite', unsafePointer.env);
+    } finally {
+      console.error = originalConsoleError;
+    }
     const traversal = await fetchUpdate('https://updates.example/v2/electron/releases/2026.8.6/win32/x64/lite/%2E%2E%2Fsecret.exe', unsafePointer.env);
     const doubleEncoded = await fetchUpdate('https://updates.example/v2/electron/releases/2026.8.6/win32/x64/lite/%252e%252e.exe', unsafePointer.env);
 
