@@ -17,9 +17,6 @@ function compareParameterCount(
     return order === 'asc' ? leftCount - rightCount : rightCount - leftCount;
   }
 
-  const leftDownloads = left.downloads ?? 0;
-  const rightDownloads = right.downloads ?? 0;
-  if (leftDownloads !== rightDownloads) return rightDownloads - leftDownloads;
   return left.repoId.localeCompare(right.repoId);
 }
 

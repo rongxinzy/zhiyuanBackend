@@ -1,0 +1,58 @@
+D1 的列表接口应优先使用游标（keyset / seek）分页，不要把 LIMIT … OFFSET … 当作大表的默认方案。
+OFFSET 会随着页码变大而扫描、丢弃越来越多的行；D1 单库查询是串行处理，查询越慢吞吐越低，单条 SQL 最多 30 秒。因此它适合小型后台跳页，不适合公开列表、事件流或高频 API。 D1 Limits
+推荐以稳定且唯一的排序键分页，例如 created_at DESC, id DESC：
+CREATE INDEX IF NOT EXISTS idx_posts_tenant_created_id
+  ON posts (tenant_id, created_at DESC, id DESC);
+首页：
+SELECT id, title, created_at
+FROM posts
+WHERE tenant_id = ?
+ORDER BY created_at DESC, id DESC
+LIMIT ?; -- 取 pageSize + 1
+下一页（cursor 中保存上一页最后一条的 created_at 和 id）：
+SELECT id, title, created_at
+FROM posts
+WHERE tenant_id = ?
+  AND (
+    created_at < ?
+    OR (created_at = ? AND id < ?)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT ?; -- pageSize + 1
+Worker 侧逻辑：
+const requestedSize = Number(url.searchParams.get("limit") ?? 20);
+const pageSize = Math.min(Math.max(requestedSize, 1), 100);
+const cursor = decodeCursor(url.searchParams.get("cursor")); // { createdAt, id } | null
+
+const sql = cursor
+  ? `SELECT id, title, created_at FROM posts
+     WHERE tenant_id = ?
+       AND (created_at < ? OR (created_at = ? AND id < ?))
+     ORDER BY created_at DESC, id DESC LIMIT ?`
+  : `SELECT id, title, created_at FROM posts
+     WHERE tenant_id = ?
+     ORDER BY created_at DESC, id DESC LIMIT ?`;
+
+const bindings = cursor
+  ? [tenantId, cursor.createdAt, cursor.createdAt, cursor.id, pageSize + 1]
+  : [tenantId, pageSize + 1];
+
+const { results } = await env.DB.prepare(sql).bind(...bindings).all();
+const hasMore = results.length > pageSize;
+const items = results.slice(0, pageSize);
+const last = items.at(-1);
+
+return Response.json({
+  items,
+  nextCursor: hasMore && last
+    ? encodeCursor({ createdAt: last.created_at, id: last.id })
+    : null,
+});
+关键约束：
+排序必须确定且唯一：只按 created_at 排序会在同一时间戳下漏数据或重复；追加 id 解决它。
+cursor 应编码成不透明字符串，服务端仍须校验格式；不要把未经校验的排序列、方向等拼进 SQL。
+查询条件和索引应对齐：多租户列表通常是 (tenant_id, created_at, id)；复合索引要让 WHERE 中的左侧列先出现。Cloudflare 也建议用 EXPLAIN QUERY PLAN 验证实际使用了索引。 Use indexes
+COUNT(*) 不要每页执行。若 UI 不需要精确总页数，返回 hasMore 即可；需要总量时单独请求、缓存或异步维护统计。
+允许跳到“第 N 页”的管理台场景可用 OFFSET，但应限制最大页深/结果规模；业务接口仍以 cursor 为主。
+若记录会修改排序字段，分页期间可能出现位置漂移；优先使用不可变的创建时间，或在首次查询固定一个 snapshotAt 上界。
+D1 每次 Worker 调用的查询次数也有限（Free 50、Paid 1000），所以一个分页请求尽量保持为一次列表查询，不要对每条记录再额外查询详情。 D1 Limits
