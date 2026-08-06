@@ -688,12 +688,12 @@ export class ModelScopeHttpError extends Error {
 
 export function createCatalogResponse(
   models: CatalogModel[],
-  totalCount = models.length,
+  totalCount?: number,
   warning?: string,
 ): CatalogSearchResponse {
   return {
     models,
-    totalCount,
+    ...(totalCount === undefined ? {} : { totalCount }),
     warning,
     source: 'cloud-catalog',
     scoreVersion: SCORE_VERSION,

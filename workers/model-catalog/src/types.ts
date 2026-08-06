@@ -95,7 +95,9 @@ export type CatalogModel = {
 
 export type CatalogSearchResponse = {
   models: CatalogModel[];
-  totalCount: number;
+  totalCount?: number;
+  hasMore?: boolean;
+  nextCursor?: string;
   nextPageNumber?: number;
   warning?: string;
   source: 'cloud-catalog' | 'd1' | 'modelscope' | 'curated';

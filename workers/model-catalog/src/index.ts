@@ -7,6 +7,12 @@ import {
   SCORE_VERSION,
   searchModelScope,
 } from './modelScope';
+import {
+  buildCursorScope,
+  decodeCatalogCursor,
+  encodeCatalogCursor,
+  type CatalogCursor,
+} from './catalogCursor';
 import { withModelScope } from './tokenPool';
 import type {
   CatalogModel,
@@ -17,7 +23,13 @@ import type {
 import { sortModelsByParameterCount, type ParameterSortOrder } from './sort';
 
 
-type DbModelRow = { model_json: string; updated_at?: string };
+type DbModelRow = {
+  model_json: string;
+  updated_at?: string;
+  parameter_count?: number | null;
+  parameter_count_known?: number;
+  metadata_status?: string | null;
+};
 type DbPageRow = { response_json: string; checked_at: string; stale_after: string };
 
 const CORS = {
@@ -107,7 +119,25 @@ function upstreamQuery(query: string, _task: CatalogTask): string {
 function modelFromRow(row: DbModelRow): CatalogModel | null {
   try {
     const model = JSON.parse(row.model_json) as CatalogModel;
-    return model && typeof model === 'object' && isVerifiedGgufModel(model) ? model : null;
+    if (!model || typeof model !== 'object') return null;
+    delete model.parameterCount;
+    delete model.metadataStatus;
+    const parameterCount =
+      typeof row.parameter_count === 'number' && Number.isFinite(row.parameter_count)
+        ? row.parameter_count
+        : undefined;
+    const metadataStatus =
+      row.metadata_status === 'verified' ||
+      row.metadata_status === 'pending' ||
+      row.metadata_status === 'unavailable'
+        ? (row.metadata_status as NonNullable<CatalogModel['metadataStatus']>)
+        : undefined;
+    const resolved = {
+      ...model,
+      ...(parameterCount === undefined ? {} : { parameterCount }),
+      ...(metadataStatus === undefined ? {} : { metadataStatus }),
+    };
+    return isVerifiedGgufModel(resolved) ? resolved : null;
   } catch {
     return null;
   }
@@ -185,17 +215,12 @@ async function searchDbModels(
   if (input.size !== 'all') conditions.push(`sizes_json LIKE '%"${input.size}"%'`);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = await env.DB.prepare(
-    `SELECT model_json FROM models ${where} ORDER BY downloads DESC`,
-  ).all<{ model_json: string }>();
+    `SELECT model_json, parameter_count, parameter_count_known, metadata_status
+     FROM models ${where} ORDER BY downloads DESC`,
+  ).all<DbModelRow>();
   const keyword = input.query.trim().toLowerCase();
   const filtered = (rows.results ?? [])
-    .map((row) => {
-      try {
-        return JSON.parse(row.model_json) as CatalogModel;
-      } catch {
-        return null;
-      }
-    })
+    .map(modelFromRow)
     .filter((model): model is CatalogModel => {
       if (!model || !matchesFilters(model, input.task, input.size, input.tags)) return false;
       if (!keyword) return true;
@@ -229,10 +254,10 @@ async function searchFeaturedDbModels(
   },
 ): Promise<{ models: CatalogModel[]; totalCount: number }> {
   const rows = await env.DB.prepare(
-    `SELECT model_json FROM models
+    `SELECT model_json, parameter_count, parameter_count_known, metadata_status FROM models
      WHERE featured = 1
      ORDER BY COALESCE(featured_rank, 2147483647), downloads DESC`,
-  ).all<{ model_json: string }>();
+  ).all<DbModelRow>();
   const filtered = (rows.results ?? [])
     .map(modelFromRow)
     .filter((model): model is CatalogModel =>
@@ -243,6 +268,131 @@ async function searchFeaturedDbModels(
     totalCount: filtered.length,
   };
 }
+async function searchDbModelsCursor(
+  env: CatalogEnv,
+  input: {
+    task: CatalogTask;
+    size: CatalogSize;
+    tags: string[];
+    query: string;
+    limit: number;
+    sortOrder: ParameterSortOrder;
+    cursor: CatalogCursor | null;
+    cursorScope: string;
+  },
+): Promise<{
+  models: CatalogModel[];
+  totalCount?: number;
+  hasMore: boolean;
+  nextCursor?: string;
+}> {
+  const conditions: string[] = [];
+  const filterParams: Array<string | number> = [];
+  const wildcard = String.fromCharCode(37);
+  if (input.task !== 'all') {
+    conditions.push('m.capability_json LIKE ?');
+    filterParams.push(wildcard + '"' + input.task + '"' + wildcard);
+  }
+  if (input.size !== 'all') {
+    conditions.push('m.sizes_json LIKE ?');
+    filterParams.push(wildcard + '"' + input.size + '"' + wildcard);
+  }
+  if (input.tags.length) {
+    conditions.push('(' + input.tags.map(() => 'm.tags_json LIKE ?').join(' OR ') + ')');
+    filterParams.push(...input.tags.map((tag) => wildcard + '"' + tag + '"' + wildcard));
+  }
+  if (input.query.trim()) {
+    const ignoredTokens = input.query
+      .match(/[\\p{L}\\p{N}_-]+/gu)
+      ?.map((token) => '"' + token.replace(/"/g, '""') + '"')
+      .join(' AND ');
+    void ignoredTokens;
+    const ftsTokens = input.query.trim().split(String.fromCharCode(32))
+      .map((token) => String.fromCharCode(34) + token + String.fromCharCode(34))
+      .join(' AND ');
+    const keywordConditions = ['m.repo_id LIKE ?'];
+    filterParams.push(wildcard + input.query.trim() + wildcard);
+    if (ftsTokens) {
+      keywordConditions.push(
+        'm.rowid IN (SELECT rowid FROM models_fts WHERE models_fts MATCH ?)',
+      );
+      filterParams.push(ftsTokens);
+    }
+    conditions.push('(' + keywordConditions.join(' OR ') + ')');
+  }
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
+  const cursorConditions: string[] = [];
+  const cursorParams: Array<string | number> = [];
+  if (input.cursor) {
+    if (input.cursor.parameterCountKnown === 1) {
+      const countOperator = input.sortOrder === 'asc' ? '>' : '<';
+      cursorConditions.push(
+        '((' +
+          'm.parameter_count_known = 1 AND (' +
+          'm.parameter_count ' + countOperator +
+          ' ? OR (m.parameter_count = ? AND m.repo_id > ?)' +
+          ')' +
+          ') OR m.parameter_count_known = 0)',
+      );
+      cursorParams.push(
+        input.cursor.parameterCount as number,
+        input.cursor.parameterCount as number,
+        input.cursor.repoId,
+      );
+    } else {
+      cursorConditions.push('m.parameter_count_known = 0 AND m.repo_id > ?');
+      cursorParams.push(input.cursor.repoId);
+    }
+  }
+  const cursorWhere = cursorConditions.length
+    ? (where ? where + ' AND ' : 'WHERE ') + cursorConditions.join(' AND ')
+    : where;
+  const orderDirection = input.sortOrder === 'asc' ? 'ASC' : 'DESC';
+  const selectSql =
+    'SELECT m.model_json, m.parameter_count, m.parameter_count_known, m.metadata_status ' +
+    'FROM models AS m ' +
+    cursorWhere +
+    ' ORDER BY m.parameter_count_known DESC, m.parameter_count ' +
+    orderDirection +
+    ', m.repo_id ASC LIMIT ?';
+  const rows = await env.DB.prepare(selectSql)
+    .bind(...filterParams, ...cursorParams, input.limit + 1)
+    .all<DbModelRow>();
+  const pageRows = rows.results ?? [];
+  const hasMore = pageRows.length > input.limit;
+  const models = pageRows
+    .slice(0, input.limit)
+    .map(modelFromRow)
+    .filter((model): model is CatalogModel =>
+      Boolean(model && matchesFilters(model, input.task, input.size, input.tags)),
+    );
+  const last = models.at(-1);
+  const nextCursor =
+    hasMore && last
+      ? encodeCatalogCursor({
+          version: 1,
+          scope: input.cursorScope,
+          sortOrder: input.sortOrder,
+          parameterCountKnown:
+            typeof last.parameterCount === 'number' && Number.isFinite(last.parameterCount) ? 1 : 0,
+          ...(typeof last.parameterCount === 'number' && Number.isFinite(last.parameterCount)
+            ? { parameterCount: last.parameterCount }
+            : {}),
+          repoId: last.repoId,
+        })
+      : undefined;
+  let totalCount: number | undefined;
+  if (!input.cursor) {
+    const countRow = await env.DB.prepare(
+      'SELECT COUNT(*) AS totalCount FROM models AS m ' + where,
+    )
+      .bind(...filterParams)
+      .first<{ totalCount: number }>();
+    totalCount = countRow?.totalCount ?? 0;
+  }
+  return { models, totalCount, hasMore, ...(nextCursor ? { nextCursor } : {}) };
+}
+
 async function upsertModels(
   env: CatalogEnv,
   models: CatalogModel[],
@@ -257,8 +407,8 @@ async function upsertModels(
   const now = new Date().toISOString();
   const statements = accepted.map((model) =>
     env.DB.prepare(
-      `INSERT INTO models(id, repo_id, source, name, description, tags_json, sizes_json, capability_json, model_json, downloads, quality_score, trust_score, community_score, featured, featured_rank, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO models(id, repo_id, source, name, description, tags_json, sizes_json, capability_json, model_json, downloads, quality_score, trust_score, community_score, featured, featured_rank, updated_at, parameter_count, parameter_count_known, metadata_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          repo_id = excluded.repo_id,
          source = excluded.source,
@@ -274,6 +424,9 @@ async function upsertModels(
          community_score = excluded.community_score,
          featured = CASE WHEN excluded.featured = 1 THEN 1 ELSE featured END,
          featured_rank = CASE WHEN excluded.featured = 1 THEN excluded.featured_rank ELSE featured_rank END,
+         parameter_count = excluded.parameter_count,
+         parameter_count_known = excluded.parameter_count_known,
+         metadata_status = excluded.metadata_status,
          updated_at = excluded.updated_at`,
     ).bind(
       model.id,
@@ -292,6 +445,11 @@ async function upsertModels(
       model.isFeatured ? 1 : 0,
       model.featuredRank ?? null,
       now,
+      typeof model.parameterCount === 'number' && Number.isFinite(model.parameterCount)
+        ? model.parameterCount
+        : null,
+      typeof model.parameterCount === 'number' && Number.isFinite(model.parameterCount) ? 1 : 0,
+      model.metadataStatus ?? (isVerifiedGgufModel(model) ? 'verified' : 'pending'),
     ),
   );
   await env.DB.batch(statements);
@@ -365,18 +523,19 @@ function searchCacheKey(input: {
   size: CatalogSize;
   tags: string[];
   limit: number;
-  page: number;
+  page?: number;
+  cursor?: string | null;
   featuredOnly: boolean;
   sortOrder: ParameterSortOrder;
 }): string {
   return [
-    input.featuredOnly ? 'featured-v3' : 'search-v3',
+    input.featuredOnly ? 'featured-v4' : 'search-v4-cursor',
     input.query.toLowerCase(),
     input.task,
     input.size,
     [...input.tags].sort().join(','),
     input.limit,
-    input.page,
+    input.cursor ?? input.page ?? 1,
     input.sortOrder,
   ].join('|');
 }
@@ -403,13 +562,35 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
   const page = Math.max(1, Number(url.searchParams.get('page')) || 1);
   const featuredOnly = url.searchParams.get('featured') === '1';
   const sortOrder = parseSortBy(url.searchParams.get('sortby'));
-  const sortFeatured = url.searchParams.has('sortby');
+  const cursorValue = url.searchParams.get('cursor');
+  const cursor = decodeCatalogCursor(cursorValue);
+  const cursorScope = buildCursorScope({ query, task, size, tags, sortOrder });
+  if (
+    cursorValue &&
+    (!cursor || cursor.scope !== cursorScope || cursor.sortOrder !== sortOrder)
+  ) {
+    return errorResponse('invalid_cursor', 400);
+  }
+  if (!featuredOnly && !cursorValue && page > 1) {
+    return errorResponse('cursor_required', 400);
+  }
+  if (featuredOnly) return errorResponse('featured_filter_disabled', 400);
   const forceRefresh = url.searchParams.get('refresh') === '1';
-  const cacheKey = searchCacheKey({ query, task, size, tags, limit, page, featuredOnly, sortOrder });
+  const cacheKey = searchCacheKey({
+    query,
+    task,
+    size,
+    tags,
+    limit,
+    page,
+    cursor: cursorValue,
+    featuredOnly,
+    sortOrder,
+  });
   const cached = await readCatalogPage(
     env,
     cacheKey,
-    sortFeatured || !featuredOnly ? sortOrder : undefined,
+    sortOrder,
   );
   if (cached?.fresh && !forceRefresh) {
     return json(cached.response, 200, {
@@ -419,10 +600,48 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
   }
 
   try {
+    const db = await searchDbModelsCursor(env, {
+      task,
+      size,
+      tags,
+      query,
+      limit,
+      sortOrder,
+      cursor,
+      cursorScope,
+    });
+    const cursorResponse: CatalogSearchResponse = {
+      ...createCatalogResponse(db.models, cursor ? undefined : db.totalCount),
+      hasMore: db.hasMore,
+      ...(db.nextCursor ? { nextCursor: db.nextCursor } : {}),
+      source: 'd1',
+    };
+    await writeCatalogPage(env, cacheKey, cursorResponse, SEARCH_CACHE_TTL_SECONDS);
+    return json(cursorResponse, 200, {
+      'cache-control': 'public, max-age=60, s-maxage=300',
+      'x-catalog-cache': 'miss',
+    });
+
     let models: CatalogModel[] = [];
     let totalCount = 0;
     let hasNextPage = false;
-    if (query.trim()) {
+    let nextCursor: string | undefined;
+    if (!featuredOnly) {
+      const db = await searchDbModelsCursor(env, {
+        task,
+        size,
+        tags,
+        query,
+        limit,
+        sortOrder,
+        cursor,
+        cursorScope,
+      });
+      models = db.models;
+      totalCount = db.totalCount ?? 0;
+      hasNextPage = db.hasMore;
+      nextCursor = db.nextCursor;
+    } else if (query.trim()) {
       // Keyword search stays local; an unknown keyword returns an empty page.
       const db = await searchDbModels(env, { task, size, tags, query, page, limit, sortOrder });
       if (db.totalCount > 0) {
@@ -454,7 +673,7 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
     } else {
       // Featured recommendations use the last curated D1 snapshot only.
       const db = await searchFeaturedDbModels(env, { task, size, tags, page, limit });
-      models = sortFeatured ? sortModelsByParameterCount(db.models, sortOrder) : db.models;
+      models = sortModelsByParameterCount(db.models, sortOrder);
       totalCount = db.totalCount;
       hasNextPage = page * limit < totalCount;
     }
@@ -467,8 +686,10 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
       }));
     }
     const response: CatalogSearchResponse = {
-      ...createCatalogResponse(models, totalCount),
-      ...(hasNextPage ? { nextPageNumber: page + 1 } : {}),
+      ...createCatalogResponse(models, cursor && !featuredOnly ? undefined : totalCount),
+      hasMore: hasNextPage,
+      ...(nextCursor ? { nextCursor } : {}),
+      ...(!nextCursor && hasNextPage ? { nextPageNumber: page + 1 } : {}),
       source: 'd1',
     };
     await writeCatalogPage(
@@ -499,7 +720,8 @@ async function readStoredModel(env: CatalogEnv, repoId: string): Promise<{
   fresh: boolean;
 } | null> {
   const row = await env.DB.prepare(
-    'SELECT model_json, updated_at FROM models WHERE repo_id = ? LIMIT 1',
+    `SELECT model_json, updated_at, parameter_count, parameter_count_known, metadata_status
+     FROM models WHERE repo_id = ? LIMIT 1`,
   )
     .bind(repoId)
     .first<DbModelRow>();
