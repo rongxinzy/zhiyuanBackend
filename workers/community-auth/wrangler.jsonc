@@ -1,0 +1,55 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "zhiyuan-community-auth",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-08",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "account.rongxzyai.com",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "AUTH_DB",
+      "database_name": "zhiyuan-community-auth",
+      "database_id": "edca38b8-f845-468d-a62d-32f079977983"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "IP_RATE_LIMITER",
+      "namespace_id": "1101",
+      "simple": {
+        "limit": 20,
+        "period": 60
+      }
+    },
+    {
+      "name": "EMAIL_RATE_LIMITER",
+      "namespace_id": "1102",
+      "simple": {
+        "limit": 5,
+        "period": 60
+      }
+    }
+  ],
+  "vars": {
+    "ENVIRONMENT": "production",
+    "LOGIN_EMAIL_FROM": "知远 <login@auth.rongxzyai.com>",
+    "TURNSTILE_SITEKEY": "0x4AAAAAAEKH0c1u-D2zSA4c",
+    "TURNSTILE_EXPECTED_HOSTNAME": "account.rongxzyai.com",
+    "TURNSTILE_EXPECTED_ACTION": "login-email-challenge"
+  },
+  "secrets": {
+    "required": ["RESEND_API_KEY", "OTP_PEPPER", "TURNSTILE_SECRET_KEY", "SESSION_SIGNING_KEY"]
+  },
+  "triggers": {
+    "crons": ["17 3 * * *"]
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

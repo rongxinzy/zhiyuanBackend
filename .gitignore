@@ -3,6 +3,7 @@ node_modules/
 .dev.vars
 .env*
 !.env.example
+.resend
 worker-configuration.d.ts
 claudflare
 deleted-models-2026-08-05.json
