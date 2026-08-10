@@ -43,12 +43,14 @@ jobs:
         run: |
           npm run types
           npm run types:catalog
+          npm run types:community-auth
 
       - name: Type-check Workers
         run: |
           npm run check
           npm run check:update
           npm run check:catalog
+          npm run check:community-auth
 
   deploy:
     name: Deploy ${{ matrix.worker }}
@@ -65,6 +67,8 @@ jobs:
             config: workers/update/wrangler.jsonc
           - worker: Model catalog
             config: workers/model-catalog/wrangler.jsonc
+          - worker: Community auth
+            config: workers/community-auth/wrangler.jsonc
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -74,5 +78,5 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE }}
           accountId: 9ac9f96b683fc7350c779e5e8e082513
-          wranglerVersion: 4.114.0
+          wranglerVersion: 4.120.0
           command: deploy --config ${{ matrix.config }}
