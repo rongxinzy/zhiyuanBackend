@@ -1,6 +1,10 @@
 export type CatalogTask = 'all' | 'chat' | 'reasoning' | 'embedding' | 'code' | 'vision';
 export type CatalogSize = 'all' | 'small' | 'desktop' | 'workstation' | 'large';
-export type CatalogFit = 'all' | 'recommended' | 'excellent' | 'compatible' | 'unsupported';
+export type CatalogDeviceProfile = 'base' | 'pro';
+export type CatalogSearchType = CatalogDeviceProfile | 'other';
+export type CatalogFitStatus = 'recommended' | 'runnable' | 'unsupported' | 'unknown';
+export type CatalogFit = 'all' | 'recommended' | 'runnable';
+export type CatalogDeviceFit = Record<CatalogDeviceProfile, CatalogFitStatus>;
 
 export type CatalogEvidence = {
   source: string;
@@ -72,6 +76,13 @@ export type CatalogModel = {
   downloads?: number;
   detailUrl?: string;
   parameterCount?: number;
+  deviceFit?: CatalogDeviceFit;
+  supportsMultiGpu?: boolean;
+  multiGpuEvidence?: string;
+  measuredPeakVramBytes?: number;
+  measuredPeakVramPerGpuBytes?: number;
+  measuredPeakSystemMemoryBytes?: number;
+  requiresCpuOffload?: boolean;
   installed?: boolean;
   installedPath?: string;
   isFeatured?: boolean;

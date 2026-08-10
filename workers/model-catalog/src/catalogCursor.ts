@@ -1,4 +1,4 @@
-import type { CatalogSize, CatalogTask } from './types';
+import type { CatalogDeviceProfile, CatalogFit, CatalogSize, CatalogTask } from './types';
 import type { ParameterSortOrder } from './sort';
 
 export type CatalogCursor = {
@@ -37,6 +37,8 @@ export function buildCursorScope(input: {
   size: CatalogSize;
   tags: string[];
   sortOrder: ParameterSortOrder;
+  device?: CatalogDeviceProfile;
+  fit?: CatalogFit;
 }): string {
   return [
     input.query.trim().toLowerCase(),
@@ -44,6 +46,8 @@ export function buildCursorScope(input: {
     input.size,
     [...input.tags].sort().join(','),
     input.sortOrder,
+    input.device ?? 'all',
+    input.fit ?? 'all',
   ].join('|');
 }
 

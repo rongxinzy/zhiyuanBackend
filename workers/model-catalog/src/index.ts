@@ -14,8 +14,13 @@ import {
   type CatalogCursor,
 } from './catalogCursor';
 import { withModelScope } from './tokenPool';
+import { computeDeviceFit } from './deviceFit';
 import type {
+  CatalogDeviceProfile,
+  CatalogFit,
+  CatalogFitStatus,
   CatalogModel,
+  CatalogSearchType,
   CatalogSearchResponse,
   CatalogSize,
   CatalogTask,
@@ -29,6 +34,8 @@ type DbModelRow = {
   parameter_count?: number | null;
   parameter_count_known?: number;
   metadata_status?: string | null;
+  device_fit_base?: string | null;
+  device_fit_pro?: string | null;
 };
 type DbPageRow = { response_json: string; checked_at: string; stale_after: string };
 
@@ -97,6 +104,32 @@ function parseSize(value: string | null): CatalogSize {
   return allowed.includes(value as CatalogSize) ? (value as CatalogSize) : 'all';
 }
 
+function parseDevice(value: string | null): CatalogDeviceProfile | undefined {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (normalized === 'base') return 'base';
+  if (normalized === 'pro') return 'pro';
+  return undefined;
+}
+
+function parseSearchType(value: string | null): CatalogSearchType | undefined {
+  const normalized = (value ?? '').trim().toLowerCase();
+  if (normalized === 'base' || normalized === 'pro' || normalized === 'other') {
+    return normalized;
+  }
+  return undefined;
+}
+
+function parseFit(value: string | null): CatalogFit {
+  const normalized = (value ?? 'all').trim().toLowerCase();
+  return normalized === 'recommended' || normalized === 'runnable' ? normalized : 'all';
+}
+
+function parseFitStatus(value: string | null | undefined): CatalogFitStatus | undefined {
+  return value === 'recommended' || value === 'runnable' || value === 'unsupported' || value === 'unknown'
+    ? value
+    : undefined;
+}
+
 function parseSortBy(value: string | null): ParameterSortOrder {
   const normalized = (value ?? 'asc').trim().toLowerCase();
   return normalized === 'desc' ||
@@ -122,6 +155,7 @@ function modelFromRow(row: DbModelRow): CatalogModel | null {
     if (!model || typeof model !== 'object') return null;
     delete model.parameterCount;
     delete model.metadataStatus;
+    delete model.deviceFit;
     const parameterCount =
       typeof row.parameter_count === 'number' && Number.isFinite(row.parameter_count)
         ? row.parameter_count
@@ -132,10 +166,20 @@ function modelFromRow(row: DbModelRow): CatalogModel | null {
       row.metadata_status === 'unavailable'
         ? (row.metadata_status as NonNullable<CatalogModel['metadataStatus']>)
         : undefined;
-    const resolved = {
+    const modelWithParameterCount = {
       ...model,
       ...(parameterCount === undefined ? {} : { parameterCount }),
+    };
+    const computedDeviceFit = computeDeviceFit(modelWithParameterCount);
+    const deviceFit = {
+      base: parseFitStatus(row.device_fit_base) ?? computedDeviceFit.base,
+      pro: parseFitStatus(row.device_fit_pro) ?? computedDeviceFit.pro,
+    };
+    const resolved = {
+      ...modelWithParameterCount,
+      ...(parameterCount === undefined ? {} : { parameterCount }),
       ...(metadataStatus === undefined ? {} : { metadataStatus }),
+      deviceFit,
     };
     return isVerifiedGgufModel(resolved) ? resolved : null;
   } catch {
@@ -166,6 +210,8 @@ function matchesFilters(
   task: CatalogTask,
   size: CatalogSize,
   tags: string[],
+  device?: CatalogDeviceProfile,
+  fit: CatalogFit = 'all',
 ): boolean {
   // No verified check here: the D1 library intentionally holds pending
   // listing-only records (see enqueueCatalogueSync) that browse/category pages
@@ -182,6 +228,11 @@ function matchesFilters(
   if (size !== 'all' && !model.sizes.includes(size)) return false;
   if (tags.length && !tags.some((tag) => model.tags.some((value) => value.toLowerCase() === tag))) {
     return false;
+  }
+  if (device && fit !== 'all') {
+    const status = model.deviceFit?.[device] ?? 'unknown';
+    if (fit === 'recommended' && status !== 'recommended') return false;
+    if (fit === 'runnable' && status !== 'recommended' && status !== 'runnable') return false;
   }
   return true;
 }
@@ -207,6 +258,8 @@ async function searchDbModels(
     page: number;
     limit: number;
     sortOrder: ParameterSortOrder;
+    device?: CatalogDeviceProfile;
+    fit: CatalogFit;
   },
 ): Promise<{ models: CatalogModel[]; totalCount: number }> {
   // task/size are whitelist enums from parseTask/parseSize, safe to inline.
@@ -215,14 +268,15 @@ async function searchDbModels(
   if (input.size !== 'all') conditions.push(`sizes_json LIKE '%"${input.size}"%'`);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = await env.DB.prepare(
-    `SELECT model_json, parameter_count, parameter_count_known, metadata_status
+    `SELECT model_json, parameter_count, parameter_count_known, metadata_status,
+            device_fit_base, device_fit_pro
      FROM models ${where} ORDER BY downloads DESC`,
   ).all<DbModelRow>();
   const keyword = input.query.trim().toLowerCase();
   const filtered = (rows.results ?? [])
     .map(modelFromRow)
     .filter((model): model is CatalogModel => {
-      if (!model || !matchesFilters(model, input.task, input.size, input.tags)) return false;
+      if (!model || !matchesFilters(model, input.task, input.size, input.tags, input.device, input.fit)) return false;
       if (!keyword) return true;
       const haystack = [
         model.repoId,
@@ -251,17 +305,20 @@ async function searchFeaturedDbModels(
     tags: string[];
     page: number;
     limit: number;
+    device?: CatalogDeviceProfile;
+    fit: CatalogFit;
   },
 ): Promise<{ models: CatalogModel[]; totalCount: number }> {
   const rows = await env.DB.prepare(
-    `SELECT model_json, parameter_count, parameter_count_known, metadata_status FROM models
+    `SELECT model_json, parameter_count, parameter_count_known, metadata_status,
+            device_fit_base, device_fit_pro FROM models
      WHERE featured = 1
      ORDER BY COALESCE(featured_rank, 2147483647), downloads DESC`,
   ).all<DbModelRow>();
   const filtered = (rows.results ?? [])
     .map(modelFromRow)
     .filter((model): model is CatalogModel =>
-      Boolean(model && matchesFilters(model, input.task, input.size, input.tags)),
+      Boolean(model && matchesFilters(model, input.task, input.size, input.tags, input.device, input.fit)),
     );
   return {
     models: filtered.slice((input.page - 1) * input.limit, input.page * input.limit),
@@ -279,6 +336,8 @@ async function searchDbModelsCursor(
     sortOrder: ParameterSortOrder;
     cursor: CatalogCursor | null;
     cursorScope: string;
+    device?: CatalogDeviceProfile;
+    fit: CatalogFit;
   },
 ): Promise<{
   models: CatalogModel[];
@@ -320,6 +379,14 @@ async function searchDbModelsCursor(
     }
     conditions.push('(' + keywordConditions.join(' OR ') + ')');
   }
+  if (input.device && input.fit !== 'all') {
+    const column = input.device === 'base' ? 'm.device_fit_base' : 'm.device_fit_pro';
+    conditions.push(
+      input.fit === 'recommended'
+        ? `${column} = 'recommended'`
+        : `${column} IN ('recommended', 'runnable')`,
+    );
+  }
   const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
   const cursorConditions: string[] = [];
   const cursorParams: Array<string | number> = [];
@@ -349,7 +416,8 @@ async function searchDbModelsCursor(
     : where;
   const orderDirection = input.sortOrder === 'asc' ? 'ASC' : 'DESC';
   const selectSql =
-    'SELECT m.model_json, m.parameter_count, m.parameter_count_known, m.metadata_status ' +
+    'SELECT m.model_json, m.parameter_count, m.parameter_count_known, m.metadata_status, ' +
+    'm.device_fit_base, m.device_fit_pro ' +
     'FROM models AS m ' +
     cursorWhere +
     ' ORDER BY m.parameter_count_known DESC, m.parameter_count ' +
@@ -364,7 +432,7 @@ async function searchDbModelsCursor(
     .slice(0, input.limit)
     .map(modelFromRow)
     .filter((model): model is CatalogModel =>
-      Boolean(model && matchesFilters(model, input.task, input.size, input.tags)),
+      Boolean(model && matchesFilters(model, input.task, input.size, input.tags, input.device, input.fit)),
     );
   const last = models.at(-1);
   const nextCursor =
@@ -405,10 +473,11 @@ async function upsertModels(
       );
   if (!accepted.length) return;
   const now = new Date().toISOString();
-  const statements = accepted.map((model) =>
-    env.DB.prepare(
-      `INSERT INTO models(id, repo_id, source, name, description, tags_json, sizes_json, capability_json, model_json, downloads, quality_score, trust_score, community_score, featured, featured_rank, updated_at, parameter_count, parameter_count_known, metadata_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  const statements = accepted.map((model) => {
+    const deviceFit = computeDeviceFit(model);
+    return env.DB.prepare(
+      `INSERT INTO models(id, repo_id, source, name, description, tags_json, sizes_json, capability_json, model_json, downloads, quality_score, trust_score, community_score, featured, featured_rank, updated_at, parameter_count, parameter_count_known, metadata_status, device_fit_base, device_fit_pro)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          repo_id = excluded.repo_id,
          source = excluded.source,
@@ -427,6 +496,8 @@ async function upsertModels(
          parameter_count = excluded.parameter_count,
          parameter_count_known = excluded.parameter_count_known,
          metadata_status = excluded.metadata_status,
+         device_fit_base = excluded.device_fit_base,
+         device_fit_pro = excluded.device_fit_pro,
          updated_at = excluded.updated_at`,
     ).bind(
       model.id,
@@ -437,7 +508,7 @@ async function upsertModels(
       JSON.stringify(model.tags),
       JSON.stringify(model.sizes),
       JSON.stringify(model.capability),
-      JSON.stringify(model),
+      JSON.stringify({ ...model, deviceFit }),
       model.downloads ?? null,
       model.qualityScore ?? null,
       model.trustScore ?? null,
@@ -450,8 +521,10 @@ async function upsertModels(
         : null,
       typeof model.parameterCount === 'number' && Number.isFinite(model.parameterCount) ? 1 : 0,
       model.metadataStatus ?? (isVerifiedGgufModel(model) ? 'verified' : 'pending'),
-    ),
-  );
+      deviceFit.base,
+      deviceFit.pro,
+    );
+  });
   await env.DB.batch(statements);
 
   const fileStatements = accepted.flatMap((model) =>
@@ -527,6 +600,8 @@ function searchCacheKey(input: {
   cursor?: string | null;
   featuredOnly: boolean;
   sortOrder: ParameterSortOrder;
+  device?: CatalogDeviceProfile;
+  fit: CatalogFit;
 }): string {
   return [
     input.featuredOnly ? 'featured-v4' : 'search-v4-cursor',
@@ -537,6 +612,8 @@ function searchCacheKey(input: {
     input.limit,
     input.cursor ?? input.page ?? 1,
     input.sortOrder,
+    input.device ?? 'all',
+    input.fit,
   ].join('|');
 }
 
@@ -555,6 +632,12 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
   const task = parseTask(url.searchParams.get('task'));
   const size = parseSize(url.searchParams.get('size'));
   const tags = parseList(url.searchParams.get('tags'));
+  const searchType = parseSearchType(url.searchParams.get('type'));
+  const device =
+    searchType === 'other'
+      ? undefined
+      : searchType ?? parseDevice(url.searchParams.get('device') ?? url.searchParams.get('deviceClass'));
+  const fit = parseFit(url.searchParams.get('fit'));
   const limit = Math.min(
     MAX_SEARCH_LIMIT,
     Math.max(1, Number(url.searchParams.get('limit') ?? 20) || 20),
@@ -564,7 +647,7 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
   const sortOrder = parseSortBy(url.searchParams.get('sortby'));
   const cursorValue = url.searchParams.get('cursor');
   const cursor = decodeCatalogCursor(cursorValue);
-  const cursorScope = buildCursorScope({ query, task, size, tags, sortOrder });
+  const cursorScope = buildCursorScope({ query, task, size, tags, sortOrder, device, fit });
   if (
     cursorValue &&
     (!cursor || cursor.scope !== cursorScope || cursor.sortOrder !== sortOrder)
@@ -586,6 +669,8 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
     cursor: cursorValue,
     featuredOnly,
     sortOrder,
+    device,
+    fit,
   });
   const cached = await readCatalogPage(
     env,
@@ -609,6 +694,8 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
       sortOrder,
       cursor,
       cursorScope,
+      device,
+      fit,
     });
     const cursorResponse: CatalogSearchResponse = {
       ...createCatalogResponse(db.models, cursor ? undefined : db.totalCount),
@@ -636,6 +723,8 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         sortOrder,
         cursor,
         cursorScope,
+        device,
+        fit,
       });
       models = db.models;
       totalCount = db.totalCount ?? 0;
@@ -643,7 +732,7 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
       nextCursor = db.nextCursor;
     } else if (query.trim()) {
       // Keyword search stays local; an unknown keyword returns an empty page.
-      const db = await searchDbModels(env, { task, size, tags, query, page, limit, sortOrder });
+      const db = await searchDbModels(env, { task, size, tags, query, page, limit, sortOrder, device, fit });
       if (db.totalCount > 0) {
         models = db.models;
         totalCount = db.totalCount;
@@ -651,7 +740,7 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
       }
     } else if (!featuredOnly && (task !== 'all' || size !== 'all' || tags.length > 0)) {
       // Category page: answer from the D1 model library by capability/size/tags.
-      const db = await searchDbModels(env, { task, size, tags, query: '', page, limit, sortOrder });
+      const db = await searchDbModels(env, { task, size, tags, query: '', page, limit, sortOrder, device, fit });
       models = db.models;
       totalCount = db.totalCount;
       hasNextPage = page * limit < totalCount;
@@ -666,13 +755,15 @@ async function search(env: CatalogEnv, request: Request): Promise<Response> {
         page,
         limit,
         sortOrder,
+        device,
+        fit,
       });
       models = db.models;
       totalCount = db.totalCount;
       hasNextPage = page * limit < totalCount;
     } else {
       // Featured recommendations use the last curated D1 snapshot only.
-      const db = await searchFeaturedDbModels(env, { task, size, tags, page, limit });
+      const db = await searchFeaturedDbModels(env, { task, size, tags, page, limit, device, fit });
       models = sortModelsByParameterCount(db.models, sortOrder);
       totalCount = db.totalCount;
       hasNextPage = page * limit < totalCount;
@@ -720,7 +811,8 @@ async function readStoredModel(env: CatalogEnv, repoId: string): Promise<{
   fresh: boolean;
 } | null> {
   const row = await env.DB.prepare(
-    `SELECT model_json, updated_at, parameter_count, parameter_count_known, metadata_status
+    `SELECT model_json, updated_at, parameter_count, parameter_count_known, metadata_status,
+            device_fit_base, device_fit_pro
      FROM models WHERE repo_id = ? LIMIT 1`,
   )
     .bind(repoId)
@@ -744,6 +836,7 @@ function detailResponse(model: CatalogModel, filesOnly: boolean, cacheStatus: st
         source: 'cloud-catalog',
         scoreVersion: SCORE_VERSION,
         metadataStatus: model.metadataStatus,
+        deviceFit: model.deviceFit,
         runtime: model.runtime,
       }
     : model;
@@ -868,6 +961,7 @@ async function refreshFeatured(env: CatalogEnv): Promise<void> {
       page: 1,
       featuredOnly: true,
       sortOrder: 'asc',
+      fit: 'all',
     }),
     response,
     FEATURED_CACHE_TTL_SECONDS,

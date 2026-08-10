@@ -56,5 +56,8 @@ describe('catalog cursor', () => {
     expect(buildCursorScope(base)).not.toBe(
       buildCursorScope({ ...base, sortOrder: 'desc' }),
     );
+    expect(buildCursorScope({ ...base, device: 'base', fit: 'recommended' })).not.toBe(
+      buildCursorScope({ ...base, device: 'pro', fit: 'runnable' }),
+    );
   });
 });

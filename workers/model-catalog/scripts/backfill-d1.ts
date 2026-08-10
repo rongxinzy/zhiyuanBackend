@@ -20,6 +20,7 @@ import { execFileSync } from 'child_process';
 import { readFileSync, writeFileSync } from 'fs';
 
 import { searchModelScope } from '../src/modelScope.ts';
+import { computeDeviceFit } from '../src/deviceFit.ts';
 
 const PAGE_SIZE = 50;
 // ModelScope caps search paging at ~60-70 pages (HTTP 403 beyond) regardless
@@ -93,17 +94,18 @@ export function buildInsertSql(models: Awaited<ReturnType<typeof searchModelScop
       const tagsJson = sqlEscape(JSON.stringify(model.tags ?? []));
       const sizesJson = sqlEscape(JSON.stringify(model.sizes ?? []));
       const capabilityJson = sqlEscape(JSON.stringify(model.capabilities ?? [model.capability]));
-      const modelJson = sqlEscape(JSON.stringify(model));
+      const deviceFit = computeDeviceFit(model);
+      const modelJson = sqlEscape(JSON.stringify({ ...model, deviceFit }));
       const downloads = model.downloads ?? 0;
       const quality = model.qualityScore ?? null;
       const trust = model.trustScore ?? null;
       const community = model.communityScore ?? null;
       const featured = model.isFeatured ? 1 : 0;
       const featuredRank = model.featuredRank ?? null;
-      return `('${id}','${repoId}','${sqlEscape(model.source)}','${name}','${description}','${tagsJson}','${sizesJson}','${capabilityJson}','${modelJson}',${downloads},${quality},${trust},${community},${featured},${featuredRank},'${now}')`;
+      return `('${id}','${repoId}','${sqlEscape(model.source)}','${name}','${description}','${tagsJson}','${sizesJson}','${capabilityJson}','${modelJson}',${downloads},${quality},${trust},${community},${featured},${featuredRank},'${now}','${deviceFit.base}','${deviceFit.pro}')`;
     })
     .join(',\n');
-  return `INSERT INTO models(id, repo_id, source, name, description, tags_json, sizes_json, capability_json, model_json, downloads, quality_score, trust_score, community_score, featured, featured_rank, updated_at)
+  return `INSERT INTO models(id, repo_id, source, name, description, tags_json, sizes_json, capability_json, model_json, downloads, quality_score, trust_score, community_score, featured, featured_rank, updated_at, device_fit_base, device_fit_pro)
 VALUES ${rows}
 ON CONFLICT(id) DO UPDATE SET
   repo_id = excluded.repo_id,
@@ -117,6 +119,8 @@ ON CONFLICT(id) DO UPDATE SET
   quality_score = excluded.quality_score,
   trust_score = excluded.trust_score,
   community_score = excluded.community_score,
+  device_fit_base = excluded.device_fit_base,
+  device_fit_pro = excluded.device_fit_pro,
   updated_at = excluded.updated_at;`;
 }
 

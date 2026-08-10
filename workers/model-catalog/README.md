@@ -18,6 +18,20 @@ The desktop search API supports sortby=asc and sortby=desc (also parameter_asc/p
 
 The Worker owns ModelScope search/detail/file metadata, token rotation, rate-limit cooldown, D1 stale fallback and edge caching. It never proxies model bytes. The desktop downloads the selected GGUF directly, verifies byte size, SHA-256, GGUF magic/version, and only treats a real local runtime probe as final compatibility evidence.
 
+## Device adaptation
+
+The catalogue stores `deviceFit.base` and `deviceFit.pro` for each model. `base` is the 64 GB RAM plus 2 x 8 GB VRAM machine; `pro` is the 64 GB RAM plus 2 x 16 GB VRAM machine. The classifier follows `模型运行支持分类规则.md`: it estimates peak VRAM as model weight size x 1.3 when measured data is unavailable, treats catalogue GGUF models as using the default two-GPU inference path, checks both aggregate and balanced per-GPU VRAM, and downgrades by measured peak system memory when available. Non-GGUF formats still require explicit `supportsMultiGpu` evidence before aggregate VRAM is used.
+
+The search endpoint keeps the existing unrestricted behavior unless both filters are requested:
+
+- `GET /v1/catalog/search?type=base&fit=recommended`
+- `GET /v1/catalog/search?type=pro&fit=runnable`
+- `GET /v1/catalog/search?type=other`
+- `GET /v1/catalog/search?device=base&fit=recommended`
+- `GET /v1/catalog/search?device=pro&fit=runnable`
+
+`type=base` and `type=pro` select the corresponding device profile; `type=other` means unrestricted. `fit=runnable` includes both `recommended` and `runnable` models. Omit `type`/`device`/`fit` for the unrestricted catalogue. The legacy `device` and `deviceClass` parameters remain supported, but `type` takes precedence when both are present. After applying migration `0008_device_fit.sql`, run `backfill-device-fit.ts` once to label existing rows; future Worker syncs write the labels automatically.
+
 ## Refresh pending model metadata
 
 `workers/model-catalog/scripts/refresh-unverified-d1.sh` reads the local `claudflare` configuration, calls the public ModelScope legacy detail API, and refreshes pending `models` rows plus `model_files` in bounded batches. Set `REFRESH_BATCH_LIMIT`, `REFRESH_CONCURRENCY`, or `REFRESH_LOG` to adjust the run.

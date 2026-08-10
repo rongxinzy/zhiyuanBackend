@@ -2,6 +2,7 @@ import {
   getModelScopeLegacyFiles,
   normalizeStoredModelWithFiles,
 } from '../src/modelScope.ts';
+import { computeDeviceFit } from '../src/deviceFit.ts';
 import type { CatalogModel, ModelScopeFile } from '../src/types.ts';
 
 type StoredRow = { id: string; repo_id: string; model_json: string };
@@ -87,6 +88,7 @@ function ownerRepo(repoId: string): [string, string] | null {
 
 function refreshStatements(model: CatalogModel, files: ModelScopeFile[]): Statement[] {
   const updatedAt = new Date().toISOString();
+  const deviceFit = computeDeviceFit(model);
   const updateParams: Param[] = [
     model.repoId,
     model.source,
@@ -95,7 +97,7 @@ function refreshStatements(model: CatalogModel, files: ModelScopeFile[]): Statem
     JSON.stringify(model.tags),
     JSON.stringify(model.sizes),
     JSON.stringify(model.capability),
-    JSON.stringify(model),
+    JSON.stringify({ ...model, deviceFit }),
     model.downloads ?? null,
     model.qualityScore ?? null,
     model.trustScore ?? null,
@@ -110,9 +112,15 @@ function refreshStatements(model: CatalogModel, files: ModelScopeFile[]): Statem
       sql: `UPDATE models SET
         repo_id = ?, source = ?, name = ?, description = ?, tags_json = ?, sizes_json = ?,
         capability_json = ?, model_json = ?, downloads = ?, quality_score = ?, trust_score = ?,
-        community_score = ?, featured = ?, featured_rank = ?, updated_at = ?
+        community_score = ?, featured = ?, featured_rank = ?, updated_at = ?,
+        device_fit_base = ?, device_fit_pro = ?
         WHERE id = ?`,
-      params: updateParams,
+      params: [
+        ...updateParams.slice(0, -1),
+        deviceFit.base,
+        deviceFit.pro,
+        updateParams.at(-1) ?? null,
+      ],
     },
     { sql: 'DELETE FROM model_files WHERE model_id = ?', params: [model.id] },
   ];
