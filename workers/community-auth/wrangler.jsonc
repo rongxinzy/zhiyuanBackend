@@ -2,6 +2,10 @@
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "zhiyuan-community-auth",
   "main": "src/index.ts",
+  "assets": {
+    "directory": "assets",
+    "binding": "ASSETS"
+  },
   "compatibility_date": "2026-08-08",
   "workers_dev": false,
   "routes": [

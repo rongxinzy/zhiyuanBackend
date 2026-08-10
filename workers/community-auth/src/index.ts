@@ -219,6 +219,9 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
     }
     return page(env.TURNSTILE_SITEKEY, undefined, authorizationRequestId ?? undefined);
   }
+  if (request.method === 'GET' && url.pathname === '/assets/zhiyuan-wordmark-light.svg') {
+    return env.ASSETS.fetch(new Request(new URL('/zhiyuan-wordmark-light.svg', request.url), request));
+  }
   if (request.method === 'GET' && url.pathname === '/assets/login.css') return asset(LOGIN_CSS, 'text/css; charset=UTF-8');
   if (request.method === 'GET' && url.pathname === '/assets/login.js') return asset(LOGIN_JS, 'text/javascript; charset=UTF-8');
   if (request.method === 'POST' && url.pathname === '/v1/auth/email/challenges') {
