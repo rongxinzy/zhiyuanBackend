@@ -343,6 +343,8 @@ export function normalizeModel(
     sizes: inferSize(parameterCount, selectedFile?.sizeBytes ?? asNumber(model.file_size)),
     recommendedTag: selectedFile?.quantization,
     capability,
+    supportsMultiGpu: true,
+    multiGpuEvidence: 'GGUF 默认按双卡推理计算',
     filePath: selectedFile?.path,
     downloads,
     detailUrl: `${MODEL_SCOPE_ENDPOINT}/models/${repoId}`,
@@ -724,6 +726,33 @@ export function extractLegacyModelFiles(payload: unknown): ModelScopeFile[] {
       }))
       .filter((file) => Boolean(file.name));
   }) as ModelScopeFile[];
+}
+
+/**
+ * Returns an evidence label only when the model metadata explicitly describes
+ * multi-GPU inference. Absence of evidence is intentionally not false: the
+ * device-fit rule treats unset support conservatively as single-GPU.
+ */
+export function extractLegacyMultiGpuEvidence(payload: unknown): string | undefined {
+  if (!isRecord(payload)) return undefined;
+  const data = isRecord(payload.Data) ? payload.Data : isRecord(payload.data) ? payload.data : payload;
+  const readme = asString(data.ReadMeContent ?? data.readme ?? data.Readme ?? data.model_card) ?? '';
+  const structured = JSON.stringify({
+    backendSupport: data.BackendSupport ?? data.backendSupport,
+    modelInfos: data.ModelInfos ?? data.modelInfos,
+  });
+  const text = `${readme}\n${structured}`;
+
+  const signals: Array<[RegExp, string]> = [
+    [/(?:^|[^\w])(?:-sm\s+row|--split-mode(?:[=\s]+)(?:row|layer)|split_mode\s*[:=]\s*(?:row|layer))(?:[^\w]|$)/i, 'llama.cpp split mode'],
+    [/(?:tensor[- ]parallel|tensor_parallel|tensor-parallel-size|pipeline[- ]parallel|pipeline_parallel)/i, 'tensor/pipeline parallel inference'],
+    [/(?:multi[- ]gpu|multiple GPUs?|multi[- ]device|model parallel)/i, 'explicit multi-GPU inference'],
+    [/(?:CUDA_VISIBLE_DEVICES\s*=[^\r\n,]*,[^\r\n]+|device_map\s*[:=]\s*["']?auto)/i, 'multi-device runtime configuration'],
+  ];
+  for (const [pattern, signal] of signals) {
+    if (pattern.test(text)) return signal;
+  }
+  return undefined;
 }
 
 export async function getModelScopeLegacyFiles(

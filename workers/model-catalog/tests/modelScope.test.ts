@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildRepoFilesUrl,
   buildSearchUrl,
+  extractLegacyMultiGpuEvidence,
   getModelScopeDetail,
   isVerifiedGgufModel,
   ModelScopeHttpError,
@@ -20,6 +21,31 @@ function jsonResponse(body: unknown, init?: ResponseInit): Response {
 }
 
 describe('ModelScope GGUF adapter', () => {
+  it('recognizes explicit multi-GPU inference evidence from model cards', () => {
+    expect(
+      extractLegacyMultiGpuEvidence({
+        Data: { ReadMeContent: 'Run with llama-cli -sm row across multiple GPUs.' },
+      }),
+    ).toBe('llama.cpp split mode');
+    expect(
+      extractLegacyMultiGpuEvidence({
+        Data: { ReadMeContent: 'vllm serve model --tensor-parallel-size 2' },
+      }),
+    ).toBe('tensor/pipeline parallel inference');
+  });
+
+  it('does not infer multi-GPU support from ordinary model metadata', () => {
+    expect(
+      extractLegacyMultiGpuEvidence({
+        Data: {
+          Frameworks: ['Pytorch'],
+          Libraries: ['gguf'],
+          ModelInfos: { gguf: { architecture: 'qwen3' } },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
   it('parses a named Worker-side token bundle without accepting malformed entries', () => {
     expect(
       parseTokens(
