@@ -18,11 +18,10 @@ export function loginPage(sitekey: string, initialStatus = '', authorizationRequ
     <main class="shell" aria-labelledby="login-title">
       <section class="login-panel">
         <a class="brand" href="/login" aria-label="知远登录页">
-          <span class="brand-mark" aria-hidden="true">✦</span><span>知远</span>
+          <img class="brand-wordmark" src="/assets/zhiyuan-wordmark-light.svg" alt="知远">
         </a>
         <header>
           <h1 id="login-title">登录知远</h1>
-          <p>登录是可选的，不影响本地功能。</p>
         </header>
 
         <form id="email-form" novalidate>
@@ -33,7 +32,7 @@ export function loginPage(sitekey: string, initialStatus = '', authorizationRequ
           <button id="send-code" type="submit">发送验证码</button>
         </form>
 
-        <button id="offline" class="text-button" type="button">继续离线使用</button>
+        <button id="offline" class="text-button" type="button"${authorizationRequestId ? ' hidden' : ''}>继续离线使用</button>
 
         <section id="code-panel" class="code-panel" hidden aria-labelledby="code-title">
           <div class="divider"><span>或</span></div>
@@ -66,11 +65,12 @@ export const LOGIN_CSS = `
 body { margin: 0; min-width: 320px; background: radial-gradient(circle at -5% 68%, #eef4ff 0 11rem, transparent 11.1rem), radial-gradient(circle at 105% 34%, #eef4ff 0 13rem, transparent 13.1rem), #fff; }
 .shell { min-height: 100vh; display: grid; place-items: center; padding: 48px 24px; }
 .login-panel { width: min(100%, 390px); }
-.brand { display: inline-flex; align-items: center; gap: 10px; color: #172033; font-weight: 760; font-size: 24px; letter-spacing: -0.04em; text-decoration: none; }
-.brand-mark { display: grid; place-items: center; width: 34px; height: 34px; color: #fff; background: #2457e6; border-radius: 8px; font-size: 23px; line-height: 1; }
-header { margin: 44px 0 30px; }
+.brand { display: flex; align-items: center; justify-content: center; color: #172033; text-decoration: none; }
+.brand-wordmark { display: block; width: 172px; height: auto; }
+header { margin: 36px 0 30px; }
+h1, header { text-align: center; }
 h1, h2, p { margin: 0; }
-h1 { font-size: clamp(32px, 6vw, 40px); letter-spacing: -0.055em; line-height: 1.12; }
+h1 { font-size: clamp(26px, 4vw, 30px); letter-spacing: -0.055em; line-height: 1.12; }
 header p { margin-top: 12px; color: #64748b; font-size: 15px; line-height: 1.65; }
 label, h2 { display: block; color: #253047; font-size: 14px; font-weight: 680; }
 input { width: 100%; height: 48px; margin-top: 9px; padding: 0 13px; color: #172033; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; font: inherit; font-size: 15px; outline: none; transition: border-color .16s ease, box-shadow .16s ease; }
