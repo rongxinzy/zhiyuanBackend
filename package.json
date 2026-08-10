@@ -8,12 +8,16 @@
     "check:update": "node ./node_modules/typescript/bin/tsc --project workers/update/tsconfig.json --noEmit",
     "test:update": "node --experimental-strip-types --test workers/update/tests/*.test.ts",
     "check:catalog": "node ./node_modules/typescript/bin/tsc --project workers/model-catalog/tsconfig.json --noEmit",
+    "check:community-auth": "node ./node_modules/typescript/bin/tsc --project workers/community-auth/tsconfig.json --noEmit",
+    "test:community-auth": "node --experimental-strip-types --test workers/community-auth/tests/*.test.ts",
     "deploy": "node ./node_modules/wrangler/bin/wrangler.js deploy",
     "deploy:update": "node ./node_modules/wrangler/bin/wrangler.js deploy --config workers/update/wrangler.jsonc",
     "types": "node ./node_modules/wrangler/bin/wrangler.js types",
     "types:update": "node ./node_modules/wrangler/bin/wrangler.js types workers/update/worker-configuration.d.ts --config workers/update/wrangler.jsonc",
     "types:catalog": "node ./node_modules/wrangler/bin/wrangler.js types workers/model-catalog/worker-configuration.d.ts --config workers/model-catalog/wrangler.jsonc",
-    "deploy:catalog": "node ./node_modules/wrangler/bin/wrangler.js deploy --config workers/model-catalog/wrangler.jsonc"
+    "types:community-auth": "node ./node_modules/wrangler/bin/wrangler.js types workers/community-auth/worker-configuration.d.ts --config workers/community-auth/wrangler.jsonc",
+    "deploy:catalog": "node ./node_modules/wrangler/bin/wrangler.js deploy --config workers/model-catalog/wrangler.jsonc",
+    "deploy:community-auth": "node ./node_modules/wrangler/bin/wrangler.js deploy --config workers/community-auth/wrangler.jsonc"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
