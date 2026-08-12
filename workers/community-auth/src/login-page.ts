@@ -90,10 +90,10 @@ button:disabled { cursor: wait; opacity: .62; }
 .code-inputs input { min-width: 0; height: 50px; margin: 0; padding: 0; text-align: center; font-size: 22px; font-variant-numeric: tabular-nums; }
 .resend-button { margin-top: 18px; }
 .resend-button:disabled { cursor: default; color: #94a3b8; opacity: 1; }
-.status { min-height: 22px; margin-top: 18px; color: #64748b; font-size: 14px; line-height: 1.5; }
+.status { min-height: 22px; margin-top: 18px; color: #64748b; font-size: 14px; line-height: 1.5; text-align: center; }
 .status[data-state="error"] { color: #b42318; }
 .status[data-state="success"] { color: #087443; }
-.privacy { margin-top: 32px; color: #64748b; font-size: 12px; line-height: 1.65; }
+.privacy { margin-top: 32px; color: #64748b; font-size: 12px; line-height: 1.65; text-align: center; }
 @media (max-width: 520px) { body { background: #fff; } .shell { align-items: start; padding: 36px 24px 48px; } header { margin-top: 38px; } .login-panel { width: 100%; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0.01ms !important; } }
 `;
