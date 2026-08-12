@@ -35,7 +35,6 @@ export function loginPage(sitekey: string, initialStatus = '', authorizationRequ
         <button id="offline" class="text-button" type="button"${authorizationRequestId ? ' hidden' : ''}>继续离线使用</button>
 
         <section id="code-panel" class="code-panel" hidden aria-labelledby="code-title">
-          <div class="divider"><span>或</span></div>
           <h2 id="code-title">输入验证码</h2>
           <p id="sent-to">验证码已发送至你的邮箱。</p>
           <form id="code-form" novalidate>
@@ -49,6 +48,7 @@ export function loginPage(sitekey: string, initialStatus = '', authorizationRequ
             </div>
             <button id="verify-code" type="submit">验证并继续</button>
           </form>
+          <button id="resend-code" class="text-button resend-button" type="button" disabled>60 秒后可重新发送</button>
         </section>
 
         <p id="status" class="status" role="status" aria-live="polite">${escapeHtmlAttribute(initialStatus)}</p>
@@ -85,11 +85,11 @@ button:disabled { cursor: wait; opacity: .62; }
 .text-button { margin-top: 18px; min-height: auto; color: #2457e6; background: transparent; }
 .text-button:hover { color: #1d49c7; background: transparent; }
 .code-panel { margin-top: 30px; }
-.divider { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 14px; margin-bottom: 30px; color: #94a3b8; font-size: 13px; }
-.divider::before, .divider::after { height: 1px; background: #e2e8f0; content: ""; }
 .code-panel > p { margin-top: 8px; color: #64748b; font-size: 14px; line-height: 1.5; }
 .code-inputs { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; margin: 20px 0; }
 .code-inputs input { min-width: 0; height: 50px; margin: 0; padding: 0; text-align: center; font-size: 22px; font-variant-numeric: tabular-nums; }
+.resend-button { margin-top: 18px; }
+.resend-button:disabled { cursor: default; color: #94a3b8; opacity: 1; }
 .status { min-height: 22px; margin-top: 18px; color: #64748b; font-size: 14px; line-height: 1.5; }
 .status[data-state="error"] { color: #b42318; }
 .status[data-state="success"] { color: #087443; }
@@ -100,7 +100,7 @@ button:disabled { cursor: wait; opacity: .62; }
 
 export const LOGIN_JS = `
 (() => {
-  const state = { challengeId: '', token: '' };
+  const state = { challengeId: '', token: '', resendTimer: null };
   const emailForm = document.querySelector('#email-form');
   const codeForm = document.querySelector('#code-form');
   const email = document.querySelector('#email');
@@ -108,6 +108,7 @@ export const LOGIN_JS = `
   const turnstileContainer = document.querySelector('.turnstile');
   const sendButton = document.querySelector('#send-code');
   const verifyButton = document.querySelector('#verify-code');
+  const resendButton = document.querySelector('#resend-code');
   const codePanel = document.querySelector('#code-panel');
   const sentTo = document.querySelector('#sent-to');
   const status = document.querySelector('#status');
@@ -118,6 +119,16 @@ export const LOGIN_JS = `
   const setBusy = (button, busy, label) => { button.disabled = busy; if (label) button.textContent = label; };
   const codeValue = () => codeInputs.map((input) => input.value).join('');
   const resetHumanCheck = () => { state.token = ''; if (window.turnstile && window.turnstile.reset) window.turnstile.reset(); };
+  const startResendCountdown = (seconds) => {
+    if (state.resendTimer) window.clearInterval(state.resendTimer);
+    let remaining = Math.max(0, Math.ceil(Number(seconds) || 0));
+    const update = () => {
+      resendButton.disabled = remaining > 0;
+      resendButton.textContent = remaining > 0 ? remaining + ' 秒后可重新发送' : '重新发送验证码';
+    };
+    update();
+    if (remaining > 0) state.resendTimer = window.setInterval(() => { remaining -= 1; update(); if (remaining <= 0) { window.clearInterval(state.resendTimer); state.resendTimer = null; } }, 1000);
+  };
 
   window.onTurnstileSuccess = (token) => { state.token = token; setStatus(''); };
   window.onTurnstileExpired = () => { state.token = ''; setStatus('安全验证已过期，请重新完成验证。', 'error'); };
@@ -136,17 +147,28 @@ export const LOGIN_JS = `
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'send_failed');
       state.challengeId = payload.challenge_id;
+      emailForm.hidden = true;
       codePanel.hidden = false;
       sentTo.textContent = '验证码已发送至 ' + email.value.trim().toLowerCase() + '。';
       setStatus('验证码已发送，请在 10 分钟内完成验证。', 'success');
       codeInputs[0].focus();
-      securityLabel.hidden = true;
-      turnstileContainer.hidden = true;
+      startResendCountdown(payload.resend_after_seconds ?? 60);
     } catch (error) {
       const messages = { rate_limited: '发送过于频繁，请稍后再试。', turnstile_failed: '安全验证失败，请重新完成验证。', email_delivery_unavailable: '邮件服务暂不可用，请稍后重试。', login_request_expired: '登录请求已过期，请回到知远桌面端重新发起登录。' };
       setStatus(messages[error.message] || '验证码发送失败，请稍后重试。', 'error');
       resetHumanCheck();
     } finally { setBusy(sendButton, false, '发送验证码'); }
+  });
+
+  resendButton.addEventListener('click', () => {
+    if (resendButton.disabled) return;
+    codePanel.hidden = true;
+    emailForm.hidden = false;
+    securityLabel.hidden = false;
+    turnstileContainer.hidden = false;
+    resetHumanCheck();
+    setStatus('请完成安全验证后重新发送验证码。');
+    email.focus();
   });
 
   codeInputs.forEach((input, index) => {
