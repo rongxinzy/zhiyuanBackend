@@ -7,6 +7,9 @@ import {
   getModelScopeDetail,
   isVerifiedGgufModel,
   ModelScopeHttpError,
+  normalizeModel,
+  normalizePublishedAt,
+  parameterCountFromSizes,
   recommendedFile,
   searchModelScope,
   shardGroups,
@@ -71,6 +74,34 @@ describe('ModelScope GGUF adapter', () => {
       '/api/v1/models/Qwen/Qwen3-8B-GGUF/repo/files',
     );
     expect(buildRepoFilesUrl('Qwen', 'Qwen3-8B-GGUF')).toContain('Recursive=true');
+  });
+
+  it('uses parameterCount before xB sizes and normalizes authoritative publication time', () => {
+    expect(parameterCountFromSizes(['desktop', '3.5B'])).toBe(3.5);
+    expect(parameterCountFromSizes(['small', 'invalid'])).toBeUndefined();
+    expect(normalizePublishedAt('2026-08-02T10:20:30+08:00')).toBe('2026-08-02T02:20:30.000Z');
+    expect(normalizePublishedAt('not-a-date')).toBeUndefined();
+
+    const normalized = normalizeModel(
+      {
+        id: 'demo/model',
+        display_name: 'Demo model',
+        tags: ['library:gguf'],
+        parameterCount: 7,
+        sizes: ['3B'],
+        created_at: '2026-08-02T10:20:30+08:00',
+        last_modified: '2026-08-03T00:00:00Z',
+      },
+      false,
+      undefined,
+      false,
+    );
+
+    expect(normalized).toMatchObject({
+      parameterCount: 7,
+      publishedAt: '2026-08-02T02:20:30.000Z',
+      lastModifiedAt: '2026-08-03T00:00:00Z',
+    });
   });
 
   it('admits only generative repositories with a verifiable single-file GGUF', async () => {

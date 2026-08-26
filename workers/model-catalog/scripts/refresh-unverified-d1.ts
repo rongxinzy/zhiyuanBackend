@@ -5,7 +5,7 @@ import {
 import { computeDeviceFit } from '../src/deviceFit.ts';
 import type { CatalogModel, ModelScopeFile } from '../src/types.ts';
 
-type StoredRow = { id: string; repo_id: string; model_json: string };
+type StoredRow = { id: string; repo_id: string; model_json: string; published_at?: string | null };
 type D1Result<T> = { results?: T[] };
 type D1Response<T> = { success?: boolean; errors?: Array<{ message?: string }>; result?: D1Result<T>[] };
 type Param = string | number | null;
@@ -71,7 +71,7 @@ async function d1<T>(body: Record<string, unknown>): Promise<T[]> {
 async function readPendingModels(): Promise<StoredRow[]> {
   const limit = LIMIT > 0 ? ` LIMIT ${LIMIT}` : '';
   return d1<StoredRow>({
-    sql: `SELECT id, repo_id, model_json FROM models
+    sql: `SELECT id, repo_id, model_json, published_at FROM models
       WHERE (json_extract(model_json, '$.metadataStatus') <> 'verified'
          OR json_extract(model_json, '$.metadataStatus') IS NULL)
         AND COALESCE(json_array_length(json_extract(model_json, '$.files')), 0) = 0
@@ -105,6 +105,11 @@ function refreshStatements(model: CatalogModel, files: ModelScopeFile[]): Statem
     model.isFeatured ? 1 : 0,
     model.featuredRank ?? null,
     updatedAt,
+    typeof model.parameterCount === 'number' && Number.isFinite(model.parameterCount)
+      ? model.parameterCount
+      : null,
+    typeof model.parameterCount === 'number' && Number.isFinite(model.parameterCount) ? 1 : 0,
+    model.publishedAt ?? null,
     model.id,
   ];
   const statements: Statement[] = [
@@ -113,6 +118,7 @@ function refreshStatements(model: CatalogModel, files: ModelScopeFile[]): Statem
         repo_id = ?, source = ?, name = ?, description = ?, tags_json = ?, sizes_json = ?,
         capability_json = ?, model_json = ?, downloads = ?, quality_score = ?, trust_score = ?,
         community_score = ?, featured = ?, featured_rank = ?, updated_at = ?,
+        parameter_count = ?, parameter_count_known = ?, published_at = COALESCE(?, published_at),
         device_fit_base = ?, device_fit_pro = ?
         WHERE id = ?`,
       params: [
@@ -156,7 +162,10 @@ async function mapChunk(rows: StoredRow[]): Promise<{ statements?: Statement[]; 
       const index = cursor++;
       const row = rows[index];
       try {
-        const stored = JSON.parse(row.model_json) as CatalogModel;
+        const stored = {
+          ...(JSON.parse(row.model_json) as CatalogModel),
+          ...(row.published_at ? { publishedAt: row.published_at } : {}),
+        };
         const parts = ownerRepo(row.repo_id);
         if (!parts) {
           output[index] = { reason: 'invalid_repo_id' };

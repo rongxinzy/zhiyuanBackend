@@ -9,7 +9,7 @@ import {
 describe('catalog cursor', () => {
   it('round-trips the complete stable sort position', () => {
     const cursor = {
-      version: 1 as const,
+      version: 2 as const,
       scope: buildCursorScope({
         query: 'Qwen 3',
         task: 'chat',
@@ -20,6 +20,8 @@ describe('catalog cursor', () => {
       sortOrder: 'asc' as const,
       parameterCountKnown: 1 as const,
       parameterCount: 7,
+      publishedAtKnown: 1 as const,
+      publishedAt: '2026-08-01T12:30:00.000Z',
       repoId: '模型方/Qwen-3-GGUF',
     };
 
@@ -31,11 +33,25 @@ describe('catalog cursor', () => {
     expect(
       decodeCatalogCursor(
         encodeCatalogCursor({
-          version: 1,
+          version: 2,
           scope: 'scope',
           sortOrder: 'asc',
           parameterCountKnown: 1,
           parameterCount: Number.NaN,
+          publishedAtKnown: 0,
+          repoId: 'demo/model',
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      decodeCatalogCursor(
+        encodeCatalogCursor({
+          version: 2,
+          scope: 'scope',
+          sortOrder: 'asc',
+          parameterCountKnown: 0,
+          publishedAtKnown: 1,
+          publishedAt: 'not-a-date',
           repoId: 'demo/model',
         }),
       ),

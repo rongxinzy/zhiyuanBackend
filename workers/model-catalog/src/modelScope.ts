@@ -30,6 +30,11 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
+function positiveNumber(value: unknown): number | undefined {
+  const number = asNumber(value);
+  return number !== undefined && number > 0 ? number : undefined;
+}
+
 function list(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
@@ -261,6 +266,28 @@ function parameterCountFromText(text: string): number | undefined {
   return unit === 'm' ? value / 1000 : unit === 'k' ? value / 1_000_000 : value;
 }
 
+/**
+ * Some imported catalogue records carry a display size such as "7B" instead
+ * of parameterCount. Device classes such as "desktop" deliberately do not
+ * match this format and retain their existing filtering meaning.
+ */
+export function parameterCountFromSizes(value: unknown): number | undefined {
+  for (const size of list(value)) {
+    const match = asString(size)?.match(/^\s*(\d+(?:\.\d+)?)\s*b\s*$/i);
+    if (!match) continue;
+    const count = Number(match[1]);
+    if (Number.isFinite(count) && count > 0) return count;
+  }
+  return undefined;
+}
+
+export function normalizePublishedAt(value: unknown): string | undefined {
+  const raw = asString(value);
+  if (!raw) return undefined;
+  const timestamp = Date.parse(raw);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
 function normalizedRepoId(model: ModelScopeModel): string {
   const explicit = asString(model.repo_id ?? model.model_id ?? model.id);
   if (explicit?.includes('/')) return explicit;
@@ -294,10 +321,13 @@ export function normalizeModel(
     return null;
   }
 
-  const apiParameterCount = asNumber(model.params);
-  const parameterCount = apiParameterCount
-    ? apiParameterCount / 1_000_000_000
-    : parameterCountFromText(`${repoId} ${name} ${selectedFile?.path ?? ''}`);
+  const apiParameterCount = positiveNumber(model.params);
+  const parameterCount =
+    positiveNumber(model.parameterCount) ??
+    (apiParameterCount === undefined ? undefined : apiParameterCount / 1_000_000_000) ??
+    parameterCountFromSizes(model.sizes) ??
+    parameterCountFromText(`${repoId} ${name} ${selectedFile?.path ?? ''}`);
+  const publishedAt = normalizePublishedAt(model.created_at);
   const capability = inferCapability(model);
   const tags = [...new Set([...normalizeTags(model.tags), ...capability, 'gguf'])];
   const downloads = asNumber(model.downloads ?? model.download_count);
@@ -349,6 +379,7 @@ export function normalizeModel(
     downloads,
     detailUrl: `${MODEL_SCOPE_ENDPOINT}/models/${repoId}`,
     parameterCount,
+    ...(publishedAt ? { publishedAt } : {}),
     isFeatured: featured,
     featuredRank,
     files,
@@ -358,7 +389,7 @@ export function normalizeModel(
         ? 'permissive'
         : 'restricted'
       : 'unknown',
-    lastModifiedAt: asString(model.last_modified ?? model.created_at),
+    lastModifiedAt: asString(model.last_modified),
     qualityScore,
     trustScore: license ? 74 : 52,
     communityScore,
@@ -777,6 +808,7 @@ export function normalizeStoredModelWithFiles(
       id: stored.id,
       repo_id: stored.repoId,
       display_name: stored.name,
+      created_at: stored.publishedAt,
       files: rawFiles,
     } as ModelScopeModel,
     Boolean(stored.isFeatured),

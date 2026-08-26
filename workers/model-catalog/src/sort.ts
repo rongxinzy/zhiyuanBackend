@@ -17,6 +17,16 @@ function compareParameterCount(
     return order === 'asc' ? leftCount - rightCount : rightCount - leftCount;
   }
 
+  const leftPublishedAt = left.publishedAt;
+  const rightPublishedAt = right.publishedAt;
+  const leftHasPublishedAt = typeof leftPublishedAt === 'string' && Number.isFinite(Date.parse(leftPublishedAt));
+  const rightHasPublishedAt = typeof rightPublishedAt === 'string' && Number.isFinite(Date.parse(rightPublishedAt));
+  if (leftHasPublishedAt && !rightHasPublishedAt) return -1;
+  if (!leftHasPublishedAt && rightHasPublishedAt) return 1;
+  if (leftHasPublishedAt && rightHasPublishedAt && leftPublishedAt !== rightPublishedAt) {
+    return rightPublishedAt.localeCompare(leftPublishedAt);
+  }
+
   return left.repoId.localeCompare(right.repoId);
 }
 

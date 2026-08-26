@@ -35,3 +35,9 @@ The search endpoint keeps the existing unrestricted behavior unless both filters
 ## Refresh pending model metadata
 
 `workers/model-catalog/scripts/refresh-unverified-d1.sh` reads the local `claudflare` configuration, calls the public ModelScope legacy detail API, and refreshes pending `models` rows plus `model_files` in bounded batches. Set `REFRESH_BATCH_LIMIT`, `REFRESH_CONCURRENCY`, or `REFRESH_LOG` to adjust the run.
+
+## Catalogue ordering and publication backfill
+
+Search results use a stable order: parameter count ascending, then authoritative ModelScope publication time descending, then repository ID. Models without a parameter count are last. The legacy `sortby` parameter remains accepted but cannot change this catalogue order.
+
+After applying migration `0009_published_at_cursor.sql`, run `backfill-published-at.ts` once to obtain `published_at` from the ModelScope detail API for existing records. The script requires `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`; set `PUBLISHED_AT_DRY_RUN=1` first to inspect its counts without writes.
