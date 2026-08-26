@@ -76,6 +76,8 @@ export type CatalogModel = {
   downloads?: number;
   detailUrl?: string;
   parameterCount?: number;
+  /** ModelScope's authoritative repository creation time, normalized to ISO 8601 UTC. */
+  publishedAt?: string;
   deviceFit?: CatalogDeviceFit;
   supportsMultiGpu?: boolean;
   multiGpuEvidence?: string;

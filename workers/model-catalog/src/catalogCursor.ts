@@ -2,11 +2,13 @@ import type { CatalogDeviceProfile, CatalogFit, CatalogSize, CatalogTask } from 
 import type { ParameterSortOrder } from './sort';
 
 export type CatalogCursor = {
-  version: 1;
+  version: 2;
   scope: string;
   sortOrder: ParameterSortOrder;
   parameterCountKnown: 0 | 1;
   parameterCount?: number;
+  publishedAtKnown: 0 | 1;
+  publishedAt?: string;
   repoId: string;
 };
 
@@ -66,10 +68,11 @@ export function decodeCatalogCursor(value: string | null): CatalogCursor | null 
   try {
     const parsed = JSON.parse(decoded) as Partial<CatalogCursor>;
     if (
-      parsed.version !== 1 ||
+      parsed.version !== 2 ||
       typeof parsed.scope !== 'string' ||
       (parsed.sortOrder !== 'asc' && parsed.sortOrder !== 'desc') ||
       (parsed.parameterCountKnown !== 0 && parsed.parameterCountKnown !== 1) ||
+      (parsed.publishedAtKnown !== 0 && parsed.publishedAtKnown !== 1) ||
       typeof parsed.repoId !== 'string' ||
       parsed.repoId.length === 0 ||
       parsed.repoId.length > 512
@@ -83,6 +86,15 @@ export function decodeCatalogCursor(value: string | null): CatalogCursor | null 
       return null;
     }
     if (parsed.parameterCountKnown === 0 && parsed.parameterCount !== undefined) return null;
+    if (
+      parsed.publishedAtKnown === 1 &&
+      (typeof parsed.publishedAt !== 'string' ||
+        !Number.isFinite(Date.parse(parsed.publishedAt)) ||
+        new Date(parsed.publishedAt).toISOString() !== parsed.publishedAt)
+    ) {
+      return null;
+    }
+    if (parsed.publishedAtKnown === 0 && parsed.publishedAt !== undefined) return null;
     return parsed as CatalogCursor;
   } catch {
     return null;

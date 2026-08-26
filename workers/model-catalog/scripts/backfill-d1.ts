@@ -102,10 +102,15 @@ export function buildInsertSql(models: Awaited<ReturnType<typeof searchModelScop
       const community = model.communityScore ?? null;
       const featured = model.isFeatured ? 1 : 0;
       const featuredRank = model.featuredRank ?? null;
-      return `('${id}','${repoId}','${sqlEscape(model.source)}','${name}','${description}','${tagsJson}','${sizesJson}','${capabilityJson}','${modelJson}',${downloads},${quality},${trust},${community},${featured},${featuredRank},'${now}','${deviceFit.base}','${deviceFit.pro}')`;
+      const parameterCount =
+        typeof model.parameterCount === 'number' && Number.isFinite(model.parameterCount)
+          ? model.parameterCount
+          : null;
+      const publishedAt = model.publishedAt ? `'${sqlEscape(model.publishedAt)}'` : 'NULL';
+      return `('${id}','${repoId}','${sqlEscape(model.source)}','${name}','${description}','${tagsJson}','${sizesJson}','${capabilityJson}','${modelJson}',${downloads},${quality},${trust},${community},${featured},${featuredRank},'${now}',${parameterCount ?? 'NULL'},${parameterCount === null ? 0 : 1},${publishedAt},'${deviceFit.base}','${deviceFit.pro}')`;
     })
     .join(',\n');
-  return `INSERT INTO models(id, repo_id, source, name, description, tags_json, sizes_json, capability_json, model_json, downloads, quality_score, trust_score, community_score, featured, featured_rank, updated_at, device_fit_base, device_fit_pro)
+  return `INSERT INTO models(id, repo_id, source, name, description, tags_json, sizes_json, capability_json, model_json, downloads, quality_score, trust_score, community_score, featured, featured_rank, updated_at, parameter_count, parameter_count_known, published_at, device_fit_base, device_fit_pro)
 VALUES ${rows}
 ON CONFLICT(id) DO UPDATE SET
   repo_id = excluded.repo_id,
@@ -119,6 +124,9 @@ ON CONFLICT(id) DO UPDATE SET
   quality_score = excluded.quality_score,
   trust_score = excluded.trust_score,
   community_score = excluded.community_score,
+  parameter_count = excluded.parameter_count,
+  parameter_count_known = excluded.parameter_count_known,
+  published_at = COALESCE(excluded.published_at, published_at),
   device_fit_base = excluded.device_fit_base,
   device_fit_pro = excluded.device_fit_pro,
   updated_at = excluded.updated_at;`;

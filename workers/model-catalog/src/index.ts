@@ -33,6 +33,7 @@ type DbModelRow = {
   updated_at?: string;
   parameter_count?: number | null;
   parameter_count_known?: number;
+  published_at?: string | null;
   metadata_status?: string | null;
   device_fit_base?: string | null;
   device_fit_pro?: string | null;
@@ -131,13 +132,11 @@ function parseFitStatus(value: string | null | undefined): CatalogFitStatus | un
 }
 
 function parseSortBy(value: string | null): ParameterSortOrder {
-  const normalized = (value ?? 'asc').trim().toLowerCase();
-  return normalized === 'desc' ||
-    normalized === 'descending' ||
-    normalized === 'parameter_desc' ||
-    normalized === 'parameter_descending'
-    ? 'desc'
-    : 'asc';
+  void value;
+  // The catalogue has one canonical order: smaller parameter counts first,
+  // then newer publications. Keep accepting the legacy query key without
+  // allowing it to alter cursor semantics.
+  return 'asc';
 }
 
 function upstreamQuery(query: string, _task: CatalogTask): string {
@@ -154,6 +153,7 @@ function modelFromRow(row: DbModelRow): CatalogModel | null {
     const model = JSON.parse(row.model_json) as CatalogModel;
     if (!model || typeof model !== 'object') return null;
     delete model.parameterCount;
+    delete model.publishedAt;
     delete model.metadataStatus;
     delete model.deviceFit;
     const parameterCount =
@@ -166,9 +166,16 @@ function modelFromRow(row: DbModelRow): CatalogModel | null {
       row.metadata_status === 'unavailable'
         ? (row.metadata_status as NonNullable<CatalogModel['metadataStatus']>)
         : undefined;
+    const publishedAt =
+      typeof row.published_at === 'string' &&
+      Number.isFinite(Date.parse(row.published_at)) &&
+      new Date(row.published_at).toISOString() === row.published_at
+        ? row.published_at
+        : undefined;
     const modelWithParameterCount = {
       ...model,
       ...(parameterCount === undefined ? {} : { parameterCount }),
+      ...(publishedAt === undefined ? {} : { publishedAt }),
     };
     const computedDeviceFit = computeDeviceFit(modelWithParameterCount);
     const deviceFit = {
@@ -268,7 +275,7 @@ async function searchDbModels(
   if (input.size !== 'all') conditions.push(`sizes_json LIKE '%"${input.size}"%'`);
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
   const rows = await env.DB.prepare(
-    `SELECT model_json, parameter_count, parameter_count_known, metadata_status,
+    `SELECT model_json, parameter_count, parameter_count_known, published_at, metadata_status,
             device_fit_base, device_fit_pro
      FROM models ${where} ORDER BY downloads DESC`,
   ).all<DbModelRow>();
@@ -310,7 +317,7 @@ async function searchFeaturedDbModels(
   },
 ): Promise<{ models: CatalogModel[]; totalCount: number }> {
   const rows = await env.DB.prepare(
-    `SELECT model_json, parameter_count, parameter_count_known, metadata_status,
+    `SELECT model_json, parameter_count, parameter_count_known, published_at, metadata_status,
             device_fit_base, device_fit_pro FROM models
      WHERE featured = 1
      ORDER BY COALESCE(featured_rank, 2147483647), downloads DESC`,
@@ -391,38 +398,42 @@ async function searchDbModelsCursor(
   const cursorConditions: string[] = [];
   const cursorParams: Array<string | number> = [];
   if (input.cursor) {
+    const publicationCursorCondition =
+      input.cursor.publishedAtKnown === 1
+        ? '(m.published_at IS NULL OR m.published_at < ? OR (m.published_at = ? AND m.repo_id > ?))'
+        : '(m.published_at IS NULL AND m.repo_id > ?)';
+    const publicationCursorParams: string[] =
+      input.cursor.publishedAtKnown === 1
+        ? [input.cursor.publishedAt as string, input.cursor.publishedAt as string, input.cursor.repoId]
+        : [input.cursor.repoId];
     if (input.cursor.parameterCountKnown === 1) {
-      const countOperator = input.sortOrder === 'asc' ? '>' : '<';
       cursorConditions.push(
         '((' +
           'm.parameter_count_known = 1 AND (' +
-          'm.parameter_count ' + countOperator +
-          ' ? OR (m.parameter_count = ? AND m.repo_id > ?)' +
+          'm.parameter_count > ? OR (m.parameter_count = ? AND ' + publicationCursorCondition + ')' +
           ')' +
           ') OR m.parameter_count_known = 0)',
       );
       cursorParams.push(
         input.cursor.parameterCount as number,
         input.cursor.parameterCount as number,
-        input.cursor.repoId,
+        ...publicationCursorParams,
       );
     } else {
-      cursorConditions.push('m.parameter_count_known = 0 AND m.repo_id > ?');
-      cursorParams.push(input.cursor.repoId);
+      cursorConditions.push('m.parameter_count_known = 0 AND ' + publicationCursorCondition);
+      cursorParams.push(...publicationCursorParams);
     }
   }
   const cursorWhere = cursorConditions.length
     ? (where ? where + ' AND ' : 'WHERE ') + cursorConditions.join(' AND ')
     : where;
-  const orderDirection = input.sortOrder === 'asc' ? 'ASC' : 'DESC';
   const selectSql =
-    'SELECT m.model_json, m.parameter_count, m.parameter_count_known, m.metadata_status, ' +
+    'SELECT m.model_json, m.parameter_count, m.parameter_count_known, m.published_at, m.metadata_status, ' +
     'm.device_fit_base, m.device_fit_pro ' +
     'FROM models AS m ' +
     cursorWhere +
-    ' ORDER BY m.parameter_count_known DESC, m.parameter_count ' +
-    orderDirection +
-    ', m.repo_id ASC LIMIT ?';
+    ' ORDER BY m.parameter_count_known DESC, m.parameter_count ASC, ' +
+    'm.published_at DESC, m.repo_id ASC LIMIT ?';
   const rows = await env.DB.prepare(selectSql)
     .bind(...filterParams, ...cursorParams, input.limit + 1)
     .all<DbModelRow>();
@@ -438,13 +449,24 @@ async function searchDbModelsCursor(
   const nextCursor =
     hasMore && last
       ? encodeCatalogCursor({
-          version: 1,
+          version: 2,
           scope: input.cursorScope,
           sortOrder: input.sortOrder,
           parameterCountKnown:
             typeof last.parameterCount === 'number' && Number.isFinite(last.parameterCount) ? 1 : 0,
           ...(typeof last.parameterCount === 'number' && Number.isFinite(last.parameterCount)
             ? { parameterCount: last.parameterCount }
+            : {}),
+          publishedAtKnown:
+            typeof last.publishedAt === 'string' &&
+            Number.isFinite(Date.parse(last.publishedAt)) &&
+            new Date(last.publishedAt).toISOString() === last.publishedAt
+              ? 1
+              : 0,
+          ...(typeof last.publishedAt === 'string' &&
+          Number.isFinite(Date.parse(last.publishedAt)) &&
+          new Date(last.publishedAt).toISOString() === last.publishedAt
+            ? { publishedAt: last.publishedAt }
             : {}),
           repoId: last.repoId,
         })
@@ -476,8 +498,8 @@ async function upsertModels(
   const statements = accepted.map((model) => {
     const deviceFit = computeDeviceFit(model);
     return env.DB.prepare(
-      `INSERT INTO models(id, repo_id, source, name, description, tags_json, sizes_json, capability_json, model_json, downloads, quality_score, trust_score, community_score, featured, featured_rank, updated_at, parameter_count, parameter_count_known, metadata_status, device_fit_base, device_fit_pro)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO models(id, repo_id, source, name, description, tags_json, sizes_json, capability_json, model_json, downloads, quality_score, trust_score, community_score, featured, featured_rank, updated_at, parameter_count, parameter_count_known, published_at, metadata_status, device_fit_base, device_fit_pro)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          repo_id = excluded.repo_id,
          source = excluded.source,
@@ -495,6 +517,7 @@ async function upsertModels(
          featured_rank = CASE WHEN excluded.featured = 1 THEN excluded.featured_rank ELSE featured_rank END,
          parameter_count = excluded.parameter_count,
          parameter_count_known = excluded.parameter_count_known,
+         published_at = COALESCE(excluded.published_at, published_at),
          metadata_status = excluded.metadata_status,
          device_fit_base = excluded.device_fit_base,
          device_fit_pro = excluded.device_fit_pro,
@@ -520,6 +543,7 @@ async function upsertModels(
         ? model.parameterCount
         : null,
       typeof model.parameterCount === 'number' && Number.isFinite(model.parameterCount) ? 1 : 0,
+      model.publishedAt ?? null,
       model.metadataStatus ?? (isVerifiedGgufModel(model) ? 'verified' : 'pending'),
       deviceFit.base,
       deviceFit.pro,
@@ -604,7 +628,7 @@ function searchCacheKey(input: {
   fit: CatalogFit;
 }): string {
   return [
-    input.featuredOnly ? 'featured-v4' : 'search-v4-cursor',
+    input.featuredOnly ? 'featured-v5' : 'search-v5-parameter-published-cursor',
     input.query.toLowerCase(),
     input.task,
     input.size,
@@ -811,7 +835,7 @@ async function readStoredModel(env: CatalogEnv, repoId: string): Promise<{
   fresh: boolean;
 } | null> {
   const row = await env.DB.prepare(
-    `SELECT model_json, updated_at, parameter_count, parameter_count_known, metadata_status,
+    `SELECT model_json, updated_at, parameter_count, parameter_count_known, published_at, metadata_status,
             device_fit_base, device_fit_pro
      FROM models WHERE repo_id = ? LIMIT 1`,
   )
