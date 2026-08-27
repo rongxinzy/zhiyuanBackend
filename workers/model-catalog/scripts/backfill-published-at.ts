@@ -6,9 +6,11 @@
  *   CLOUDFLARE_API_TOKEN
  *
  * Optional environment variables:
- *   PUBLISHED_AT_LIMIT          limit rows fetched from D1 (0 = all)
+ *   PUBLISHED_AT_LIMIT          maximum rows to process (0 = all)
+ *   PUBLISHED_AT_BATCH_SIZE     D1 page size during a full run (default 20)
  *   PUBLISHED_AT_CONCURRENCY    concurrent ModelScope requests (default 2)
  *   PUBLISHED_AT_DRY_RUN        set to 1 to skip D1 writes
+ *   PUBLISHED_AT_FULL_RUN       set to 1 to scan every missing row once
  */
 type Scalar = string | number | null;
 type D1Row = { repo_id: string };
@@ -26,8 +28,10 @@ const API_TOKEN = required('CLOUDFLARE_API_TOKEN');
 const DATABASE_ID = '50f6b300-7c67-41c6-8431-7aa2bfd88a7f';
 const D1_URL = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/d1/database/${DATABASE_ID}/query`;
 const LIMIT = positiveInt(process.env.PUBLISHED_AT_LIMIT, 0);
+const BATCH_SIZE = Math.max(1, Math.min(100, positiveInt(process.env.PUBLISHED_AT_BATCH_SIZE, 20)));
 const CONCURRENCY = Math.max(1, Math.min(4, positiveInt(process.env.PUBLISHED_AT_CONCURRENCY, 2)));
 const DRY_RUN = process.env.PUBLISHED_AT_DRY_RUN === '1';
+const FULL_RUN = process.env.PUBLISHED_AT_FULL_RUN === '1';
 const WRITE_BATCH_SIZE = 50;
 
 function required(name: string): string {
@@ -63,13 +67,19 @@ async function d1<T>(body: Record<string, unknown>): Promise<T[]> {
   return payload.result?.flatMap((result) => result.results ?? []) ?? [];
 }
 
-async function readMissingModels(): Promise<D1Row[]> {
-  const limit = LIMIT > 0 ? ` LIMIT ${LIMIT}` : '';
+async function readMissingModels(afterRepoId?: string, limit = LIMIT): Promise<D1Row[]> {
+  const clauses = ['published_at IS NULL'];
+  const params: Scalar[] = [];
+  if (afterRepoId) {
+    clauses.push('repo_id > ?');
+    params.push(afterRepoId);
+  }
+  const limitClause = limit > 0 ? ` LIMIT ${limit}` : '';
   return d1<D1Row>({
     sql: `SELECT repo_id FROM models
-      WHERE published_at IS NULL
-      ORDER BY repo_id${limit}`,
-    params: [],
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY repo_id${limitClause}`,
+    params,
   });
 }
 
@@ -149,13 +159,42 @@ async function writeMatches(matches: Match[]): Promise<void> {
   }
 }
 
-async function main(): Promise<void> {
-  const rows = await readMissingModels();
-  console.log(`[published-at] missing=${rows.length}, concurrency=${CONCURRENCY}, dry_run=${DRY_RUN}`);
+async function processBatch(rows: D1Row[]): Promise<number> {
   const matches = await lookup(rows);
-  console.log(`[published-at] resolved=${matches.length}, unresolved=${rows.length - matches.length}`);
+  console.log(`[published-at] batch=${rows.length}, resolved=${matches.length}, unresolved=${rows.length - matches.length}`);
   if (!DRY_RUN && matches.length > 0) await writeMatches(matches);
-  console.log(`[published-at] done updated=${DRY_RUN ? 0 : matches.length}`);
+  return matches.length;
+}
+
+async function clearCatalogPageCache(): Promise<void> {
+  await d1<unknown>({ sql: 'DELETE FROM catalog_pages', params: [] });
+  console.log('[published-at] catalog page cache cleared');
+}
+
+async function main(): Promise<void> {
+  if (!FULL_RUN) {
+    const rows = await readMissingModels(undefined, LIMIT);
+    console.log(`[published-at] missing=${rows.length}, concurrency=${CONCURRENCY}, dry_run=${DRY_RUN}`);
+    const updated = await processBatch(rows);
+    console.log(`[published-at] done updated=${DRY_RUN ? 0 : updated}`);
+    return;
+  }
+
+  let afterRepoId: string | undefined;
+  let processed = 0;
+  let updated = 0;
+  console.log(`[published-at] full_run=true, batch_size=${BATCH_SIZE}, concurrency=${CONCURRENCY}, dry_run=${DRY_RUN}`);
+  while (LIMIT === 0 || processed < LIMIT) {
+    const batchLimit = LIMIT === 0 ? BATCH_SIZE : Math.min(BATCH_SIZE, LIMIT - processed);
+    const rows = await readMissingModels(afterRepoId, batchLimit);
+    if (!rows.length) break;
+    updated += await processBatch(rows);
+    processed += rows.length;
+    afterRepoId = rows[rows.length - 1].repo_id;
+    if (rows.length < batchLimit) break;
+  }
+  if (!DRY_RUN) await clearCatalogPageCache();
+  console.log(`[published-at] full_run_done processed=${processed}, updated=${DRY_RUN ? 0 : updated}`);
 }
 
 main().catch((error) => {

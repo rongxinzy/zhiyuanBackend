@@ -258,12 +258,11 @@ function normalizeFiles(rawFiles: unknown, repoId: string): CatalogFile[] {
   return files.map((file) => ({ ...file, isRecommended: file.path === recommended?.path }));
 }
 
-function parameterCountFromText(text: string): number | undefined {
-  const match = text.match(/(?:^|[-_.])([0-9]+(?:\.[0-9]+)?)([bmk])(?:[-_.]|$)/i);
+export function parameterCountFromText(text: string): number | undefined {
+  const match = text.match(/(?:^|[-_.])([0-9]+(?:\.[0-9]+)?)b(?:[-_.]|$)/i);
   if (!match) return undefined;
   const value = Number(match[1]);
-  const unit = match[2].toLowerCase();
-  return unit === 'm' ? value / 1000 : unit === 'k' ? value / 1_000_000 : value;
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
 /**
@@ -321,12 +320,22 @@ export function normalizeModel(
     return null;
   }
 
-  const apiParameterCount = positiveNumber(model.params);
-  const parameterCount =
-    positiveNumber(model.parameterCount) ??
-    (apiParameterCount === undefined ? undefined : apiParameterCount / 1_000_000_000) ??
-    parameterCountFromSizes(model.sizes) ??
-    parameterCountFromText(`${repoId} ${name} ${selectedFile?.path ?? ''}`);
+  // ModelScope's `params` is not consistently a model parameter total. It can
+  // contain repository/file metadata, so only trust an explicit catalog value
+  // or a strict B-unit label from supported display fields.
+  const explicitParameterCount = positiveNumber(model.parameterCount);
+  const sizedParameterCount = parameterCountFromSizes(model.sizes);
+  const namedParameterCount = parameterCountFromText(
+    `${repoId} ${name} ${selectedFile?.path ?? ''}`,
+  );
+  const parameterCount = explicitParameterCount ?? sizedParameterCount ?? namedParameterCount;
+  const parameterCountSource = explicitParameterCount !== undefined
+    ? 'explicit'
+    : sizedParameterCount !== undefined
+      ? 'sizes'
+      : namedParameterCount !== undefined
+        ? 'name'
+        : undefined;
   const publishedAt = normalizePublishedAt(model.created_at);
   const capability = inferCapability(model);
   const tags = [...new Set([...normalizeTags(model.tags), ...capability, 'gguf'])];
@@ -378,7 +387,8 @@ export function normalizeModel(
     filePath: selectedFile?.path,
     downloads,
     detailUrl: `${MODEL_SCOPE_ENDPOINT}/models/${repoId}`,
-    parameterCount,
+    ...(parameterCount === undefined ? {} : { parameterCount }),
+    ...(parameterCountSource ? { parameterCountSource } : {}),
     ...(publishedAt ? { publishedAt } : {}),
     isFeatured: featured,
     featuredRank,
@@ -802,9 +812,13 @@ export function normalizeStoredModelWithFiles(
   stored: CatalogModel,
   rawFiles: ModelScopeFile[],
 ): CatalogModel | null {
+  const { parameterCount, parameterCountSource, ...storedWithoutParameterCount } = stored;
   return normalizeModel(
     {
-      ...stored,
+      ...storedWithoutParameterCount,
+      ...(parameterCountSource === 'explicit' && positiveNumber(parameterCount) !== undefined
+        ? { parameterCount }
+        : {}),
       id: stored.id,
       repo_id: stored.repoId,
       display_name: stored.name,

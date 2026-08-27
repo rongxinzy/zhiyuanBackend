@@ -99,9 +99,39 @@ describe('ModelScope GGUF adapter', () => {
 
     expect(normalized).toMatchObject({
       parameterCount: 7,
+      parameterCountSource: 'explicit',
       publishedAt: '2026-08-02T02:20:30.000Z',
       lastModifiedAt: '2026-08-03T00:00:00Z',
     });
+  });
+
+  it('does not treat ModelScope params or context windows as model parameter counts', () => {
+    const named = normalizeModel(
+      {
+        id: 'prithivMLmods/Qwen3.5-0.8B-f32-GGUF',
+        display_name: 'Qwen3.5-0.8B-f32-GGUF',
+        tags: ['library:gguf'],
+        params: 100_592_896,
+      },
+      false,
+      undefined,
+      false,
+    );
+    const contextOnly = normalizeModel(
+      {
+        id: 'QuantFactory/MyAlee-Qwen-Instruct-v2-16k-v1-GGUF',
+        display_name: 'MyAlee-Qwen-Instruct-v2-16k-v1-GGUF',
+        tags: ['library:gguf'],
+        params: 7_615_616_512,
+      },
+      false,
+      undefined,
+      false,
+    );
+
+    expect(named).toMatchObject({ parameterCount: 0.8, parameterCountSource: 'name' });
+    expect(contextOnly?.parameterCount).toBeUndefined();
+    expect(contextOnly?.parameterCountSource).toBeUndefined();
   });
 
   it('admits only generative repositories with a verifiable single-file GGUF', async () => {

@@ -5,6 +5,7 @@ export type CatalogSearchType = CatalogDeviceProfile | 'other';
 export type CatalogFitStatus = 'recommended' | 'runnable' | 'unsupported' | 'unknown';
 export type CatalogFit = 'all' | 'recommended' | 'runnable';
 export type CatalogDeviceFit = Record<CatalogDeviceProfile, CatalogFitStatus>;
+export type CatalogParameterCountSource = 'explicit' | 'sizes' | 'name';
 
 export type CatalogEvidence = {
   source: string;
@@ -76,6 +77,7 @@ export type CatalogModel = {
   downloads?: number;
   detailUrl?: string;
   parameterCount?: number;
+  parameterCountSource?: CatalogParameterCountSource;
   /** ModelScope's authoritative repository creation time, normalized to ISO 8601 UTC. */
   publishedAt?: string;
   deviceFit?: CatalogDeviceFit;

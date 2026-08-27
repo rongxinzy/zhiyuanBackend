@@ -628,7 +628,7 @@ function searchCacheKey(input: {
   fit: CatalogFit;
 }): string {
   return [
-    input.featuredOnly ? 'featured-v5' : 'search-v5-parameter-published-cursor',
+    input.featuredOnly ? 'featured-v6' : 'search-v6-parameter-published-cursor',
     input.query.toLowerCase(),
     input.task,
     input.size,
