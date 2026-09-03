@@ -5,6 +5,7 @@ node_modules/
 !.env.example
 .resend
 worker-configuration.d.ts
+workers/model-pool/.test-token
 claudflare
 deleted-models-2026-08-05.json
 # Private product and bid documents
