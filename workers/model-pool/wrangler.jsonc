@@ -1,0 +1,90 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "zhiyuan-model-pool",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": true,
+  "ai": {
+    "binding": "AI"
+  },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "TEST_DAILY_REQUEST_LIMIT": "100"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zhiyuan-model-pool",
+      "database_id": "056a1d16-8b1e-4b78-a784-754721e18297",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "MODEL_CONFIG",
+      "id": "2ff9a2a39669492098ffe8574ec56a0e"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "USER_QUOTA",
+        "class_name": "UserQuota"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["UserQuota"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "secrets": {
+    "required": ["MODEL_POOL_TEST_TOKEN", "UPSTREAM_API_KEY"]
+  },
+  "env": {
+    "staging": {
+      "name": "zhiyuan-model-pool-staging",
+      "ai": {
+        "binding": "AI"
+      },
+      "vars": {
+        "ENVIRONMENT": "staging",
+        "TEST_DAILY_REQUEST_LIMIT": "100"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zhiyuan-model-pool-staging",
+          "database_id": "802e7b67-3268-427a-b673-72c740cfb7cf",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "MODEL_CONFIG",
+          "id": "fd9c9089ff1b4ba08c9b5cf50040ba15"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "USER_QUOTA",
+            "class_name": "UserQuota"
+          }
+        ]
+      },
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1
+      },
+      "secrets": {
+        "required": ["MODEL_POOL_TEST_TOKEN", "UPSTREAM_API_KEY"]
+      }
+    }
+  }
+}

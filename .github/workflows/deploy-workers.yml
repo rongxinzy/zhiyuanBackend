@@ -43,6 +43,7 @@ jobs:
         run: |
           npm run types
           npm run types:catalog
+          npm run types:model-pool
           npm run types:community-auth
 
       - name: Type-check Workers
@@ -50,6 +51,7 @@ jobs:
           npm run check
           npm run check:update
           npm run check:catalog
+          npm run check:model-pool
           npm run check:community-auth
 
   deploy:
@@ -69,9 +71,20 @@ jobs:
             config: workers/model-catalog/wrangler.jsonc
           - worker: Community auth
             config: workers/community-auth/wrangler.jsonc
+          - worker: Model pool
+            config: workers/model-pool/wrangler.jsonc
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Apply Model Pool migrations
+        if: matrix.config == 'workers/model-pool/wrangler.jsonc'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE }}
+          accountId: 9ac9f96b683fc7350c779e5e8e082513
+          wranglerVersion: 4.120.0
+          command: d1 migrations apply zhiyuan-model-pool --remote --env= --config workers/model-pool/wrangler.jsonc
 
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v4
