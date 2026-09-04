@@ -3,7 +3,13 @@
   "name": "zhiyuan-model-pool",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
-  "workers_dev": true,
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "model.rongxzyai.com",
+      "custom_domain": true
+    }
+  ],
   "ai": {
     "binding": "AI"
   },
@@ -56,6 +62,7 @@
   "env": {
     "staging": {
       "name": "zhiyuan-model-pool-staging",
+      "workers_dev": true,
       "ai": {
         "binding": "AI"
       },

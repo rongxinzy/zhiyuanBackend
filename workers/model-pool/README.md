@@ -10,6 +10,7 @@ This directory owns the Cloudflare resources for the ZhiYuan Model Pool business
 | Staging | `zhiyuan-model-pool-staging` | `zhiyuan-model-pool-staging` | `zhiyuan-model-pool-config-staging` |
 
 The `UserQuota` SQLite Durable Object namespace is provisioned by the first deployment of each Worker environment.
+Production is exposed only through `https://model.rongxzyai.com`; the `workers.dev` route remains enabled only for staging.
 
 ## Commands
 
