@@ -4,6 +4,7 @@ node_modules/
 .env*
 !.env.example
 worker-configuration.d.ts
+workers/model-pool/.test-token
 
 # Private product and bid documents
 /private_doc/
