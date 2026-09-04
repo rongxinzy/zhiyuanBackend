@@ -8,6 +8,13 @@ const DESKTOP_REDIRECT_URI = 'zhiyuan://auth/callback';
 const DESKTOP_AUDIENCE = 'zhiyuan-desktop';
 const ISSUER = 'https://account.rongxzyai.com';
 
+export const AuthIdentityKind = {
+  Guest: 'guest',
+  User: 'user',
+} as const;
+
+export type AuthIdentityKind = (typeof AuthIdentityKind)[keyof typeof AuthIdentityKind];
+
 export interface AuthorizationInput {
   redirect_uri?: unknown;
   state?: unknown;
@@ -25,6 +32,10 @@ export interface TokenInput {
 export interface RefreshInput {
   grant_type?: unknown;
   refresh_token?: unknown;
+}
+
+export interface GuestTokenInput {
+  installation_id?: unknown;
 }
 
 interface AuthorizationRequest {
@@ -70,8 +81,9 @@ export interface TokenSet {
 
 export interface AccessTokenIdentity {
   userId: string;
-  email: string;
+  email?: string;
   expiresAt: number;
+  kind: AuthIdentityKind;
 }
 
 interface AccessTokenClaims {
@@ -79,9 +91,37 @@ interface AccessTokenClaims {
   aud?: unknown;
   sub?: unknown;
   email?: unknown;
+  kind?: unknown;
   iat?: unknown;
   exp?: unknown;
   jti?: unknown;
+}
+
+export function validateGuestTokenInput(
+  input: GuestTokenInput | null,
+): input is GuestTokenInput & { installation_id: string } {
+  return Boolean(
+    input && isString(input.installation_id, 36, 36, /^[0-9a-f-]{36}$/iu),
+  );
+}
+
+export async function issueGuestAccessToken(
+  signingKey: string,
+  input: GuestTokenInput & { installation_id: string },
+  now: number,
+): Promise<{ access_token: string; expires_in: number; token_type: 'Bearer' }> {
+  return {
+    access_token: await signAccessToken(
+      signingKey,
+      {
+        id: `${AuthIdentityKind.Guest}:${input.installation_id.toLowerCase()}`,
+        kind: AuthIdentityKind.Guest,
+      },
+      now,
+    ),
+    expires_in: ACCESS_TOKEN_TTL_SECONDS,
+    token_type: 'Bearer',
+  };
 }
 
 function isString(value: unknown, min: number, max: number, pattern?: RegExp): value is string {
@@ -269,7 +309,11 @@ async function issueTokens(database: D1Database, pepper: string, signingKey: str
     .bind(refreshId, user.id, refreshDigest, now, now + REFRESH_TOKEN_TTL_SECONDS)
     .run();
   return {
-    access_token: await signAccessToken(signingKey, user, now),
+    access_token: await signAccessToken(
+      signingKey,
+      { id: user.id, email: user.email_normalized, kind: AuthIdentityKind.User },
+      now,
+    ),
     refresh_token: refreshToken,
     token_type: 'Bearer',
     expires_in: ACCESS_TOKEN_TTL_SECONDS,
@@ -277,11 +321,24 @@ async function issueTokens(database: D1Database, pepper: string, signingKey: str
   };
 }
 
-async function signAccessToken(signingKey: string, user: UserRow, now: number): Promise<string> {
+async function signAccessToken(
+  signingKey: string,
+  identity: { id: string; email?: string; kind: AuthIdentityKind },
+  now: number,
+): Promise<string> {
   const header = toBase64Url(new TextEncoder().encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
   const payload = toBase64Url(
     new TextEncoder().encode(
-      JSON.stringify({ iss: ISSUER, aud: DESKTOP_AUDIENCE, sub: user.id, email: user.email_normalized, iat: now, exp: now + ACCESS_TOKEN_TTL_SECONDS, jti: generateChallengeId() }),
+      JSON.stringify({
+        iss: ISSUER,
+        aud: DESKTOP_AUDIENCE,
+        sub: identity.id,
+        ...(identity.email ? { email: identity.email } : {}),
+        kind: identity.kind,
+        iat: now,
+        exp: now + ACCESS_TOKEN_TTL_SECONDS,
+        jti: generateChallengeId(),
+      }),
     ),
   );
   const signature = await keyedDigest(signingKey, 'jwt', `${header}.${payload}`);
@@ -318,11 +375,20 @@ export async function validateAccessToken(
 
     if (!(await verifyKeyedDigest(signingKey, 'jwt', `${parts[0]}.${parts[1]}`, parts[2]))) return null;
 
+    const kind = claims.kind === undefined ? AuthIdentityKind.User : claims.kind;
+    const validUserIdentity =
+      kind === AuthIdentityKind.User &&
+      isString(claims.sub, 36, 36, /^[0-9a-f-]{36}$/iu) &&
+      isString(claims.email, 3, 320);
+    const validGuestIdentity =
+      kind === AuthIdentityKind.Guest &&
+      isString(claims.sub, 42, 42, /^guest:[0-9a-f-]{36}$/u) &&
+      claims.email === undefined;
+
     if (
       claims.iss !== ISSUER ||
       claims.aud !== DESKTOP_AUDIENCE ||
-      !isString(claims.sub, 36, 36, /^[0-9a-f-]{36}$/iu) ||
-      !isString(claims.email, 3, 320) ||
+      (!validUserIdentity && !validGuestIdentity) ||
       typeof claims.iat !== 'number' ||
       !Number.isSafeInteger(claims.iat) ||
       claims.iat > now + 60 ||
@@ -333,7 +399,12 @@ export async function validateAccessToken(
       !isString(claims.jti, 36, 36, /^[0-9a-f-]{36}$/iu)
     ) return null;
 
-    return { userId: claims.sub, email: claims.email, expiresAt: claims.exp };
+    return {
+      userId: claims.sub as string,
+      ...(typeof claims.email === 'string' ? { email: claims.email } : {}),
+      expiresAt: claims.exp,
+      kind: kind as AuthIdentityKind,
+    };
   } catch {
     return null;
   }
