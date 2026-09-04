@@ -1,4 +1,4 @@
-import { generateChallengeId, keyedDigest, randomBase64Url, sha256Base64Url, toBase64Url } from './crypto.ts';
+import { generateChallengeId, keyedDigest, randomBase64Url, sha256Base64Url, toBase64Url, verifyKeyedDigest } from './crypto.ts';
 
 const AUTHORIZATION_TTL_SECONDS = 10 * 60;
 const AUTHORIZATION_CODE_TTL_SECONDS = 60;
@@ -7,6 +7,13 @@ const REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const DESKTOP_REDIRECT_URI = 'zhiyuan://auth/callback';
 const DESKTOP_AUDIENCE = 'zhiyuan-desktop';
 const ISSUER = 'https://account.rongxzyai.com';
+
+export const AuthIdentityKind = {
+  Guest: 'guest',
+  User: 'user',
+} as const;
+
+export type AuthIdentityKind = (typeof AuthIdentityKind)[keyof typeof AuthIdentityKind];
 
 export interface AuthorizationInput {
   redirect_uri?: unknown;
@@ -25,6 +32,10 @@ export interface TokenInput {
 export interface RefreshInput {
   grant_type?: unknown;
   refresh_token?: unknown;
+}
+
+export interface GuestTokenInput {
+  installation_id?: unknown;
 }
 
 interface AuthorizationRequest {
@@ -66,6 +77,51 @@ export interface TokenSet {
   token_type: 'Bearer';
   expires_in: number;
   user: UserIdentity;
+}
+
+export interface AccessTokenIdentity {
+  userId: string;
+  email?: string;
+  expiresAt: number;
+  kind: AuthIdentityKind;
+}
+
+interface AccessTokenClaims {
+  iss?: unknown;
+  aud?: unknown;
+  sub?: unknown;
+  email?: unknown;
+  kind?: unknown;
+  iat?: unknown;
+  exp?: unknown;
+  jti?: unknown;
+}
+
+export function validateGuestTokenInput(
+  input: GuestTokenInput | null,
+): input is GuestTokenInput & { installation_id: string } {
+  return Boolean(
+    input && isString(input.installation_id, 36, 36, /^[0-9a-f-]{36}$/iu),
+  );
+}
+
+export async function issueGuestAccessToken(
+  signingKey: string,
+  input: GuestTokenInput & { installation_id: string },
+  now: number,
+): Promise<{ access_token: string; expires_in: number; token_type: 'Bearer' }> {
+  return {
+    access_token: await signAccessToken(
+      signingKey,
+      {
+        id: `${AuthIdentityKind.Guest}:${input.installation_id.toLowerCase()}`,
+        kind: AuthIdentityKind.Guest,
+      },
+      now,
+    ),
+    expires_in: ACCESS_TOKEN_TTL_SECONDS,
+    token_type: 'Bearer',
+  };
 }
 
 function isString(value: unknown, min: number, max: number, pattern?: RegExp): value is string {
@@ -253,7 +309,11 @@ async function issueTokens(database: D1Database, pepper: string, signingKey: str
     .bind(refreshId, user.id, refreshDigest, now, now + REFRESH_TOKEN_TTL_SECONDS)
     .run();
   return {
-    access_token: await signAccessToken(signingKey, user, now),
+    access_token: await signAccessToken(
+      signingKey,
+      { id: user.id, email: user.email_normalized, kind: AuthIdentityKind.User },
+      now,
+    ),
     refresh_token: refreshToken,
     token_type: 'Bearer',
     expires_in: ACCESS_TOKEN_TTL_SECONDS,
@@ -261,13 +321,91 @@ async function issueTokens(database: D1Database, pepper: string, signingKey: str
   };
 }
 
-async function signAccessToken(signingKey: string, user: UserRow, now: number): Promise<string> {
+async function signAccessToken(
+  signingKey: string,
+  identity: { id: string; email?: string; kind: AuthIdentityKind },
+  now: number,
+): Promise<string> {
   const header = toBase64Url(new TextEncoder().encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
   const payload = toBase64Url(
     new TextEncoder().encode(
-      JSON.stringify({ iss: ISSUER, aud: DESKTOP_AUDIENCE, sub: user.id, email: user.email_normalized, iat: now, exp: now + ACCESS_TOKEN_TTL_SECONDS, jti: generateChallengeId() }),
+      JSON.stringify({
+        iss: ISSUER,
+        aud: DESKTOP_AUDIENCE,
+        sub: identity.id,
+        ...(identity.email ? { email: identity.email } : {}),
+        kind: identity.kind,
+        iat: now,
+        exp: now + ACCESS_TOKEN_TTL_SECONDS,
+        jti: generateChallengeId(),
+      }),
     ),
   );
   const signature = await keyedDigest(signingKey, 'jwt', `${header}.${payload}`);
   return `${header}.${payload}.${signature}`;
+}
+
+function decodeBase64UrlJson(value: string): unknown {
+  if (!/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error('invalid_base64url');
+  const base64 = value.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
+  const binary = atob(base64);
+  const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+}
+
+export async function validateAccessToken(
+  signingKey: string,
+  accessToken: string,
+  now: number,
+): Promise<AccessTokenIdentity | null> {
+  if (accessToken.length > 4_096) return null;
+  const parts = accessToken.split('.');
+  if (parts.length !== 3) return null;
+
+  try {
+    const header = decodeBase64UrlJson(parts[0]);
+    const claims = decodeBase64UrlJson(parts[1]) as AccessTokenClaims;
+    if (
+      !header ||
+      typeof header !== 'object' ||
+      Array.isArray(header) ||
+      (header as Record<string, unknown>).alg !== 'HS256' ||
+      (header as Record<string, unknown>).typ !== 'JWT'
+    ) return null;
+
+    if (!(await verifyKeyedDigest(signingKey, 'jwt', `${parts[0]}.${parts[1]}`, parts[2]))) return null;
+
+    const kind = claims.kind === undefined ? AuthIdentityKind.User : claims.kind;
+    const validUserIdentity =
+      kind === AuthIdentityKind.User &&
+      isString(claims.sub, 36, 36, /^[0-9a-f-]{36}$/iu) &&
+      isString(claims.email, 3, 320);
+    const validGuestIdentity =
+      kind === AuthIdentityKind.Guest &&
+      isString(claims.sub, 42, 42, /^guest:[0-9a-f-]{36}$/u) &&
+      claims.email === undefined;
+
+    if (
+      claims.iss !== ISSUER ||
+      claims.aud !== DESKTOP_AUDIENCE ||
+      (!validUserIdentity && !validGuestIdentity) ||
+      typeof claims.iat !== 'number' ||
+      !Number.isSafeInteger(claims.iat) ||
+      claims.iat > now + 60 ||
+      typeof claims.exp !== 'number' ||
+      !Number.isSafeInteger(claims.exp) ||
+      claims.exp <= now ||
+      claims.exp - claims.iat !== ACCESS_TOKEN_TTL_SECONDS ||
+      !isString(claims.jti, 36, 36, /^[0-9a-f-]{36}$/iu)
+    ) return null;
+
+    return {
+      userId: claims.sub as string,
+      ...(typeof claims.email === 'string' ? { email: claims.email } : {}),
+      expiresAt: claims.exp,
+      kind: kind as AuthIdentityKind,
+    };
+  } catch {
+    return null;
+  }
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "zhiyuan-community-auth",
-  "main": "src/index.ts",
+  "main": "src/entrypoint.ts",
   "assets": {
     "directory": "assets",
     "binding": "ASSETS"
@@ -35,6 +35,14 @@
       "namespace_id": "1102",
       "simple": {
         "limit": 5,
+        "period": 60
+      }
+    },
+    {
+      "name": "GUEST_TOKEN_RATE_LIMITER",
+      "namespace_id": "1103",
+      "simple": {
+        "limit": 10,
         "period": 60
       }
     }

@@ -3,10 +3,23 @@
   "name": "zhiyuan-model-pool",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
-  "workers_dev": true,
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "model.rongxzyai.com",
+      "custom_domain": true
+    }
+  ],
   "ai": {
     "binding": "AI"
   },
+  "services": [
+    {
+      "binding": "AUTH_SERVICE",
+      "service": "zhiyuan-community-auth",
+      "entrypoint": "AuthService"
+    }
+  ],
   "vars": {
     "ENVIRONMENT": "production",
     "TEST_DAILY_REQUEST_LIMIT": "100"
@@ -49,9 +62,17 @@
   "env": {
     "staging": {
       "name": "zhiyuan-model-pool-staging",
+      "workers_dev": true,
       "ai": {
         "binding": "AI"
       },
+      "services": [
+        {
+          "binding": "AUTH_SERVICE",
+          "service": "zhiyuan-community-auth",
+          "entrypoint": "AuthService"
+        }
+      ],
       "vars": {
         "ENVIRONMENT": "staging",
         "TEST_DAILY_REQUEST_LIMIT": "100"
