@@ -5,6 +5,7 @@ import {
   incrementDailyTokenUsage,
   ModelAccessDecision,
   ModelAccessDenialCode,
+  ModelPoolIdentityKind,
   type ModelAccessPolicy,
   resolveModelAccess,
 } from './business-policy.ts';
@@ -65,11 +66,14 @@ const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const DYNAMIC_ROUTE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
 interface AuthenticatedUser {
+  kind: ModelPoolIdentityKind;
   userId: string;
 }
 
 interface AuthServiceBinding {
-  authenticate(accessToken: string): Promise<{ userId: string; expiresAt: number } | null>;
+  authenticate(
+    accessToken: string,
+  ): Promise<{ userId: string; expiresAt: number; kind: ModelPoolIdentityKind } | null>;
 }
 
 interface QuotaLimits {
@@ -208,14 +212,14 @@ async function authenticateRequest(request: Request, env: Env): Promise<Authenti
   if (!token) return errorResponse('unauthorized', 'A valid ZhiYuan account session is required.', 401);
 
   if (env.ENVIRONMENT === 'staging' && secretsMatch(token, env.MODEL_POOL_TEST_TOKEN)) {
-    return { userId: 'staging-test-user' };
+    return { userId: 'staging-test-user', kind: ModelPoolIdentityKind.User };
   }
 
   try {
     const authService = env.AUTH_SERVICE as unknown as AuthServiceBinding;
     const identity = await authService.authenticate(token);
     return identity
-      ? { userId: identity.userId }
+      ? { userId: identity.userId, kind: identity.kind }
       : errorResponse('unauthorized', 'A valid ZhiYuan account session is required.', 401);
   } catch (error) {
     console.error('[ModelPool] account authentication failed:', error);
@@ -362,9 +366,15 @@ function modelAccessError(code: string): Response {
 async function loadAccessPolicy(
   env: Env,
   userId: string,
+  identityKind: ModelPoolIdentityKind,
 ): Promise<ModelAccessPolicy | Response> {
   try {
-    const access = await resolveModelAccess(env.DB, userId, LogicalModel.Free);
+    const access = await resolveModelAccess(
+      env.DB,
+      userId,
+      LogicalModel.Free,
+      identityKind,
+    );
     return access.decision === ModelAccessDecision.Allowed
       ? access.policy
       : modelAccessError(access.code);
@@ -444,7 +454,7 @@ async function proxyChatCompletions(
     return errorResponse('invalid_request', 'The request must include at least one message.', 400);
   }
 
-  const policy = await loadAccessPolicy(env, authentication.userId);
+  const policy = await loadAccessPolicy(env, authentication.userId, authentication.kind);
   if (policy instanceof Response) return policy;
 
   const route = await loadFreeRoute(env);
@@ -472,7 +482,7 @@ async function proxyChatCompletions(
     date,
   );
   if (!quota.allowed) {
-    return errorResponse('quota_exceeded', 'The account model quota has been exhausted.', 429);
+    return errorResponse('quota_exceeded', 'The free model quota has been exhausted.', 429);
   }
   ctx.waitUntil(recordRequestUsage(env, policy, date));
 
@@ -539,7 +549,7 @@ export default {
       const authentication = await authenticateRequest(request, env);
       if (authentication instanceof Response) return authentication;
 
-      const policy = await loadAccessPolicy(env, authentication.userId);
+      const policy = await loadAccessPolicy(env, authentication.userId, authentication.kind);
       if (policy instanceof Response) {
         return policy.status === 403 ? json({ object: 'list', data: [] }) : policy;
       }

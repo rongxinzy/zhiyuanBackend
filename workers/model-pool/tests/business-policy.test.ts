@@ -5,6 +5,8 @@ import {
   evaluateModelAccess,
   ModelAccessDecision,
   ModelAccessDenialCode,
+  ModelPoolIdentityKind,
+  resolveDefaultPlanId,
   type ModelAccessSnapshot,
 } from '../src/business-policy.ts';
 
@@ -19,6 +21,11 @@ const activeSnapshot: ModelAccessSnapshot = {
   route_enabled: 1,
   openai_route: 'free-agent-openai',
 };
+
+test('assigns separate default plans to guest and account identities', () => {
+  assert.equal(resolveDefaultPlanId(ModelPoolIdentityKind.Guest), 'guest');
+  assert.equal(resolveDefaultPlanId(ModelPoolIdentityKind.User), 'free');
+});
 
 test('returns the plan limits and route for an entitled active user', () => {
   assert.deepEqual(evaluateModelAccess(activeSnapshot, 'user-1'), {

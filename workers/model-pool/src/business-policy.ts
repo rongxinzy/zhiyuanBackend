@@ -9,9 +9,24 @@ export const ModelAccessDenialCode = {
   ModelUnavailable: 'model_unavailable',
 } as const;
 
-const DefaultPlan = {
-  Id: 'free',
+export const ModelPoolIdentityKind = {
+  Guest: 'guest',
+  User: 'user',
 } as const;
+
+export type ModelPoolIdentityKind =
+  (typeof ModelPoolIdentityKind)[keyof typeof ModelPoolIdentityKind];
+
+const DefaultPlanId = {
+  Guest: 'guest',
+  User: 'free',
+} as const;
+
+export function resolveDefaultPlanId(identityKind: ModelPoolIdentityKind): string {
+  return identityKind === ModelPoolIdentityKind.Guest
+    ? DefaultPlanId.Guest
+    : DefaultPlanId.User;
+}
 
 interface UserRecord {
   id: string;
@@ -94,6 +109,7 @@ async function provisionFreeUser(
   database: D1Database,
   userId: string,
   logicalModelId: string,
+  identityKind: ModelPoolIdentityKind,
 ): Promise<void> {
   const existing = await database
     .prepare('SELECT id FROM users WHERE id = ?1')
@@ -108,7 +124,7 @@ async function provisionFreeUser(
          VALUES (?1, 'active', ?2)
          ON CONFLICT(id) DO NOTHING`,
       )
-      .bind(userId, DefaultPlan.Id),
+      .bind(userId, resolveDefaultPlanId(identityKind)),
     database
       .prepare(
         `INSERT INTO entitlements (user_id, logical_model_id, enabled)
@@ -123,9 +139,10 @@ export async function resolveModelAccess(
   database: D1Database,
   userId: string,
   logicalModelId: string,
+  identityKind: ModelPoolIdentityKind,
   now = new Date(),
 ): Promise<ModelAccessResult> {
-  await provisionFreeUser(database, userId, logicalModelId);
+  await provisionFreeUser(database, userId, logicalModelId, identityKind);
 
   const row = await database
     .prepare(
