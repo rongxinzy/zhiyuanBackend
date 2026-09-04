@@ -50,6 +50,8 @@ The `mode: direct-test` route remains available only for short-lived provider co
 
 The checked-in route graph is `cloudflare/free-agent-openai.route.json`. Its current BYOK fallback order is Groq then OpenRouter; the Worker provides the final Workers AI fallback. Agnes is intentionally excluded while its origin rejects Cloudflare egress with HTTP 1015.
 
+Protocol admission results and the current Anthropic activation boundary are recorded in `PROVIDER_COMPATIBILITY.md`.
+
 Cloudflare management calls for this graph require a dedicated API token. Give the token only these account permissions:
 
 - AI Gateway: Read and Edit
