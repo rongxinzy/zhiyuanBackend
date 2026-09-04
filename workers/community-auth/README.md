@@ -25,6 +25,10 @@ Successful requests return `202` with a challenge ID. Codes expire after 10 minu
 
 `verify` accepts `{ "code": "123456" }`. A challenge is single-use, expires after 10 minutes, and locks after five unsuccessful attempts. When it belongs to a valid authorization request, verification creates the account if needed and returns a 60-second, one-time authorization code through the allowlisted desktop callback. Refresh tokens are stored only as HMAC digests in D1 and are rotated on use.
 
+## Internal authentication
+
+The named `AuthService` Worker entrypoint validates access-token signatures and claims for other Workers in the same Cloudflare account. Consumers call it through a Service Binding; there is no public introspection endpoint. The method returns only the user ID and token expiry needed for authorization, and never returns the user's email address.
+
 ## Provisioning
 
 1. Verify `auth.rongxzyai.com` in Resend and keep its SPF and DKIM records active.

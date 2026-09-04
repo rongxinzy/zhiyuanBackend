@@ -7,6 +7,13 @@
   "ai": {
     "binding": "AI"
   },
+  "services": [
+    {
+      "binding": "AUTH_SERVICE",
+      "service": "zhiyuan-community-auth",
+      "entrypoint": "AuthService"
+    }
+  ],
   "vars": {
     "ENVIRONMENT": "production",
     "TEST_DAILY_REQUEST_LIMIT": "100"
@@ -52,6 +59,13 @@
       "ai": {
         "binding": "AI"
       },
+      "services": [
+        {
+          "binding": "AUTH_SERVICE",
+          "service": "zhiyuan-community-auth",
+          "entrypoint": "AuthService"
+        }
+      ],
       "vars": {
         "ENVIRONMENT": "staging",
         "TEST_DAILY_REQUEST_LIMIT": "100"

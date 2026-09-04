@@ -1,4 +1,4 @@
-import { generateChallengeId, keyedDigest, randomBase64Url, sha256Base64Url, toBase64Url } from './crypto.ts';
+import { generateChallengeId, keyedDigest, randomBase64Url, sha256Base64Url, toBase64Url, verifyKeyedDigest } from './crypto.ts';
 
 const AUTHORIZATION_TTL_SECONDS = 10 * 60;
 const AUTHORIZATION_CODE_TTL_SECONDS = 60;
@@ -66,6 +66,22 @@ export interface TokenSet {
   token_type: 'Bearer';
   expires_in: number;
   user: UserIdentity;
+}
+
+export interface AccessTokenIdentity {
+  userId: string;
+  email: string;
+  expiresAt: number;
+}
+
+interface AccessTokenClaims {
+  iss?: unknown;
+  aud?: unknown;
+  sub?: unknown;
+  email?: unknown;
+  iat?: unknown;
+  exp?: unknown;
+  jti?: unknown;
 }
 
 function isString(value: unknown, min: number, max: number, pattern?: RegExp): value is string {
@@ -270,4 +286,55 @@ async function signAccessToken(signingKey: string, user: UserRow, now: number): 
   );
   const signature = await keyedDigest(signingKey, 'jwt', `${header}.${payload}`);
   return `${header}.${payload}.${signature}`;
+}
+
+function decodeBase64UrlJson(value: string): unknown {
+  if (!/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error('invalid_base64url');
+  const base64 = value.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
+  const binary = atob(base64);
+  const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+}
+
+export async function validateAccessToken(
+  signingKey: string,
+  accessToken: string,
+  now: number,
+): Promise<AccessTokenIdentity | null> {
+  if (accessToken.length > 4_096) return null;
+  const parts = accessToken.split('.');
+  if (parts.length !== 3) return null;
+
+  try {
+    const header = decodeBase64UrlJson(parts[0]);
+    const claims = decodeBase64UrlJson(parts[1]) as AccessTokenClaims;
+    if (
+      !header ||
+      typeof header !== 'object' ||
+      Array.isArray(header) ||
+      (header as Record<string, unknown>).alg !== 'HS256' ||
+      (header as Record<string, unknown>).typ !== 'JWT'
+    ) return null;
+
+    if (!(await verifyKeyedDigest(signingKey, 'jwt', `${parts[0]}.${parts[1]}`, parts[2]))) return null;
+
+    if (
+      claims.iss !== ISSUER ||
+      claims.aud !== DESKTOP_AUDIENCE ||
+      !isString(claims.sub, 36, 36, /^[0-9a-f-]{36}$/iu) ||
+      !isString(claims.email, 3, 320) ||
+      typeof claims.iat !== 'number' ||
+      !Number.isSafeInteger(claims.iat) ||
+      claims.iat > now + 60 ||
+      typeof claims.exp !== 'number' ||
+      !Number.isSafeInteger(claims.exp) ||
+      claims.exp <= now ||
+      claims.exp - claims.iat !== ACCESS_TOKEN_TTL_SECONDS ||
+      !isString(claims.jti, 36, 36, /^[0-9a-f-]{36}$/iu)
+    ) return null;
+
+    return { userId: claims.sub, email: claims.email, expiresAt: claims.exp };
+  } catch {
+    return null;
+  }
 }

@@ -53,6 +53,14 @@ const RouteKey = {
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const DYNAMIC_ROUTE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
+interface AuthenticatedUser {
+  userId: string;
+}
+
+interface AuthServiceBinding {
+  authenticate(accessToken: string): Promise<{ userId: string; expiresAt: number } | null>;
+}
+
 export class UserQuota extends DurableObject<Env> {
   async reserveRequest(limit: number): Promise<{ allowed: boolean; remaining: number }> {
     const date = new Date().toISOString().slice(0, 10);
@@ -93,8 +101,32 @@ function secretsMatch(actual: string | null, expected: string): boolean {
   const encoder = new TextEncoder();
   const actualBytes = encoder.encode(actual);
   const expectedBytes = encoder.encode(expected);
-  return actualBytes.byteLength === expectedBytes.byteLength &&
-    crypto.subtle.timingSafeEqual(actualBytes, expectedBytes);
+  if (actualBytes.byteLength !== expectedBytes.byteLength) return false;
+  let difference = 0;
+  for (let index = 0; index < actualBytes.byteLength; index += 1) {
+    difference |= actualBytes[index] ^ expectedBytes[index];
+  }
+  return difference === 0;
+}
+
+async function authenticateRequest(request: Request, env: Env): Promise<AuthenticatedUser | Response> {
+  const token = bearerToken(request);
+  if (!token) return errorResponse('unauthorized', 'A valid ZhiYuan account session is required.', 401);
+
+  if (env.ENVIRONMENT === 'staging' && secretsMatch(token, env.MODEL_POOL_TEST_TOKEN)) {
+    return { userId: 'staging-test-user' };
+  }
+
+  try {
+    const authService = env.AUTH_SERVICE as unknown as AuthServiceBinding;
+    const identity = await authService.authenticate(token);
+    return identity
+      ? { userId: identity.userId }
+      : errorResponse('unauthorized', 'A valid ZhiYuan account session is required.', 401);
+  } catch (error) {
+    console.error('[ModelPool] account authentication failed:', error);
+    return errorResponse('authentication_unavailable', 'Account authentication is temporarily unavailable.', 503);
+  }
 }
 
 function isRouteConfig(value: unknown): value is RouteConfig {
@@ -278,9 +310,8 @@ async function runRoute(
 }
 
 async function proxyChatCompletions(request: Request, env: Env): Promise<Response> {
-  if (!secretsMatch(bearerToken(request), env.MODEL_POOL_TEST_TOKEN)) {
-    return errorResponse('unauthorized', 'A valid Model Pool access token is required.', 401);
-  }
+  const authentication = await authenticateRequest(request, env);
+  if (authentication instanceof Response) return authentication;
 
   const contentLength = Number.parseInt(request.headers.get('content-length') ?? '0', 10);
   if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
@@ -309,7 +340,7 @@ async function proxyChatCompletions(request: Request, env: Env): Promise<Respons
     return errorResponse('model_unavailable', 'The requested logical model has no active route.', 503);
   }
 
-  const quotaId = env.USER_QUOTA.idFromName('model-pool-test-user');
+  const quotaId = env.USER_QUOTA.idFromName(authentication.userId);
   const quota = await env.USER_QUOTA.get(quotaId).reserveRequest(dailyRequestLimit(env));
   if (!quota.allowed) {
     return errorResponse('quota_exceeded', 'The daily request quota has been exhausted.', 429);
@@ -347,9 +378,8 @@ export default {
     }
 
     if (request.method === 'GET' && url.pathname === ApiPath.Models) {
-      if (!secretsMatch(bearerToken(request), env.MODEL_POOL_TEST_TOKEN)) {
-        return errorResponse('unauthorized', 'A valid Model Pool access token is required.', 401);
-      }
+      const authentication = await authenticateRequest(request, env);
+      if (authentication instanceof Response) return authentication;
 
       const route = await loadFreeRoute(env);
       return json({

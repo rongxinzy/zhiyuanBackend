@@ -1,6 +1,6 @@
 # ZhiYuan Model Pool infrastructure
 
-This directory owns the Cloudflare resources for the ZhiYuan Model Pool business layer. The Worker, D1, KV, and Durable Object are isolated from the existing community authentication service.
+This directory owns the Cloudflare resources for the ZhiYuan Model Pool business layer. The Worker validates desktop access tokens through the community authentication Worker's private `AuthService` Service Binding; no signing key or public introspection endpoint is duplicated here.
 
 ## Environments
 
@@ -24,7 +24,9 @@ npm run migrate:model-pool
 npm run deploy:model-pool
 ```
 
-The deployed test slice exposes `GET /health`, `GET /v1/models`, and `POST /v1/chat/completions`. Model endpoints require `MODEL_POOL_TEST_TOKEN`; the provider key is stored only as the `UPSTREAM_API_KEY` Worker secret. `zhiyuan-free` is resolved through KV and daily request admission is serialized by `UserQuota`.
+The deployed slice exposes `GET /health`, `GET /v1/models`, and `POST /v1/chat/completions`. Model endpoints require a current ZhiYuan desktop access token. `zhiyuan-free` is resolved through KV and daily request admission is serialized by a `UserQuota` instance named from the authenticated user ID.
+
+Staging additionally accepts `MODEL_POOL_TEST_TOKEN` for automated smoke tests. Production code never accepts that static token, even if the secret remains configured during a rollout. The `UPSTREAM_API_KEY` secret is used only by the short-lived `direct-test` route mode.
 
 The cloud test route uses `mode: workers-ai-test` and calls Workers AI through the `default` AI Gateway. It validates authentication, logical-model rewriting, quota, gateway observability, streaming, and tool calls without exposing an external provider key.
 
@@ -57,7 +59,7 @@ BYOK secret names must follow Cloudflare's `{gateway_id}_{provider_slug}_{alias}
 
 D1 marks `zhiyuan-free` active and records `default` as its OpenAI route. KV contains the test route's runtime model selection; D1 remains the business metadata source for the later user, plan, and entitlement implementation.
 
-For an operator smoke test, store the bearer token in `workers/model-pool/.test-token` with file mode `0600`. The path is ignored by Git. Rotate the deployed `MODEL_POOL_TEST_TOKEN` secret whenever this local token is replaced.
+For a staging operator smoke test, store the bearer token in `workers/model-pool/.test-token` with file mode `0600`. The path is ignored by Git. Rotate the staging `MODEL_POOL_TEST_TOKEN` secret whenever this local token is replaced. Production smoke tests use a real desktop access token.
 
 ## AI Gateway boundary
 

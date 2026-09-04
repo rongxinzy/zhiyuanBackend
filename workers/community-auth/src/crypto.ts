@@ -37,6 +37,30 @@ export async function keyedDigest(secret: string, purpose: string, value: string
   return toBase64Url(new Uint8Array(signature));
 }
 
+export async function verifyKeyedDigest(
+  secret: string,
+  purpose: string,
+  value: string,
+  signature: string,
+): Promise<boolean> {
+  if (!/^[A-Za-z0-9_-]+$/u.test(signature)) return false;
+  const base64 = signature.replaceAll('-', '+').replaceAll('_', '/').padEnd(Math.ceil(signature.length / 4) * 4, '=');
+  const signatureBytes = Uint8Array.from(atob(base64), character => character.charCodeAt(0));
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['verify'],
+  );
+  return crypto.subtle.verify(
+    'HMAC',
+    key,
+    signatureBytes,
+    new TextEncoder().encode(`${purpose}:${value}`),
+  );
+}
+
 export async function sha256Base64Url(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return toBase64Url(new Uint8Array(digest));
