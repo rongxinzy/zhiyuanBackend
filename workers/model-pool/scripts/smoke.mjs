@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 const LogicalModel = {
   Free: 'zhiyuan-free',
@@ -16,6 +17,10 @@ const ApiPath = {
 function argumentValue(name, fallback) {
   const index = process.argv.indexOf(name);
   return index === -1 ? fallback : process.argv[index + 1];
+}
+
+function hasArgument(name) {
+  return process.argv.includes(name);
 }
 
 function assert(condition, message) {
@@ -114,17 +119,30 @@ async function verifyAnonymousRejection(baseUrl) {
   console.log('PASS anonymous authentication rejection');
 }
 
-async function verifyModels(baseUrl, token) {
+async function issueGuestToken(authBaseUrl) {
+  const response = await request(authBaseUrl, '/v1/auth/guest', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ installation_id: randomUUID() }),
+  });
+  const body = await readJson(response, 'guest token issuance');
+  assert(typeof body.access_token === 'string' && body.access_token, 'guest token is missing');
+  assert(body.expires_in === 15 * 60, 'guest token has an unexpected lifetime');
+  console.log('PASS guest token issuance');
+  return body.access_token;
+}
+
+async function verifyModels(baseUrl, token, identity = 'authenticated') {
   const response = await request(baseUrl, ApiPath.Models, {
     headers: authHeaders(token),
   });
   const body = await readJson(response, 'model list');
   const ids = Array.isArray(body.data) ? body.data.map(model => model?.id) : [];
   assert(ids.includes(LogicalModel.Free), `${LogicalModel.Free} is missing from the model list`);
-  console.log(`PASS authenticated model list (${LogicalModel.Free})`);
+  console.log(`PASS ${identity} model list (${LogicalModel.Free})`);
 }
 
-async function verifyChat(baseUrl, token) {
+async function verifyChat(baseUrl, token, identity = 'authenticated') {
   const response = await request(baseUrl, ApiPath.ChatCompletions, {
     method: 'POST',
     headers: authHeaders(token),
@@ -139,7 +157,7 @@ async function verifyChat(baseUrl, token) {
   assert(Array.isArray(body.choices) && body.choices.length > 0, 'chat completion has no choices');
   assert(Number.isFinite(body.usage?.prompt_tokens), 'chat completion has no prompt token usage');
   assert(Number.isFinite(body.usage?.completion_tokens), 'chat completion has no completion token usage');
-  console.log('PASS non-streaming chat and usage');
+  console.log(`PASS ${identity} non-streaming chat and usage`);
 }
 
 async function verifyToolCalling(baseUrl, token) {
@@ -207,12 +225,23 @@ async function main() {
     '--base-url',
     'https://zhiyuan-model-pool-staging.windflyme5.workers.dev',
   );
+  const authBaseUrl = argumentValue('--auth-base-url', 'https://account.rongxzyai.com');
+  const guestOnly = hasArgument('--guest-only');
   const tokenFile = resolve(argumentValue('--token-file', 'workers/model-pool/.test-token'));
-  const token = (await readFile(tokenFile, 'utf8')).trim();
-  assert(token, `token file is empty: ${tokenFile}`);
 
   await verifyHealth(baseUrl);
   await verifyAnonymousRejection(baseUrl);
+  const guestToken = await issueGuestToken(authBaseUrl);
+  await verifyModels(baseUrl, guestToken, 'guest');
+  await verifyChat(baseUrl, guestToken, 'guest');
+
+  if (guestOnly) {
+    console.log(`Model Pool guest smoke passed: ${new URL(baseUrl).origin}`);
+    return;
+  }
+
+  const token = (await readFile(tokenFile, 'utf8')).trim();
+  assert(token, `token file is empty: ${tokenFile}`);
   await verifyModels(baseUrl, token);
   await verifyChat(baseUrl, token);
   await verifyToolCalling(baseUrl, token);

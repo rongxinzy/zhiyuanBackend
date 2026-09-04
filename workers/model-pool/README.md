@@ -67,7 +67,7 @@ D1 marks `zhiyuan-free` active, records `free-agent-openai` as its OpenAI route,
 
 For a staging operator smoke test, store the bearer token in `workers/model-pool/.test-token` with file mode `0600`. The path is ignored by Git. Rotate the staging `MODEL_POOL_TEST_TOKEN` secret whenever this local token is replaced. Production smoke tests use a real desktop access token.
 
-`npm run smoke:model-pool:staging` verifies health, anonymous rejection, the authenticated logical-model list, non-streaming inference, required tool calling, streaming termination, logical-model rewriting, and token usage. Override the endpoint or token path with `-- --base-url <url> --token-file <path>`.
+`npm run smoke:model-pool:staging` verifies health, unsigned-request rejection, guest token issuance, guest model access and inference, the authenticated logical-model list, non-streaming inference, required tool calling, streaming termination, logical-model rewriting, and token usage. Override the endpoint, account endpoint, or token path with `-- --base-url <url> --auth-base-url <url> --token-file <path>`. Add `--guest-only` when validating production without a signed-in user's token file.
 
 ## AI Gateway boundary
 
