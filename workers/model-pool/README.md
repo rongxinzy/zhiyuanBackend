@@ -19,6 +19,7 @@ Run from the `zhiyuanBackend` repository root:
 ```bash
 npm run types:model-pool
 npm run check:model-pool
+npm run smoke:model-pool:staging
 npm run migrate:model-pool:staging
 npm run deploy:model-pool:staging
 npm run migrate:model-pool
@@ -61,6 +62,8 @@ BYOK secret names must follow Cloudflare's `{gateway_id}_{provider_slug}_{alias}
 D1 marks `zhiyuan-free` active, records `free-agent-openai` as its OpenAI route, and seeds the `FREE` plan with request and token limits. KV contains the runtime route configuration. Disabling a user, entitlement, logical model, or route mapping in D1 takes effect on the next request. Removing an existing user's entitlement does not cause it to be automatically recreated; automatic entitlement provisioning applies only when the user is first created.
 
 For a staging operator smoke test, store the bearer token in `workers/model-pool/.test-token` with file mode `0600`. The path is ignored by Git. Rotate the staging `MODEL_POOL_TEST_TOKEN` secret whenever this local token is replaced. Production smoke tests use a real desktop access token.
+
+`npm run smoke:model-pool:staging` verifies health, anonymous rejection, the authenticated logical-model list, non-streaming inference, required tool calling, streaming termination, logical-model rewriting, and token usage. Override the endpoint or token path with `-- --base-url <url> --token-file <path>`.
 
 ## AI Gateway boundary
 
