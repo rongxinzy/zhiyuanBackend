@@ -234,15 +234,15 @@ async function runAiGateway(
   );
 }
 
-async function runWorkersAiTest(
+async function runWorkersAi(
   body: Record<string, unknown>,
-  route: WorkersAiTestRoute,
+  gatewayId: string,
   request: Request,
   env: Env,
 ): Promise<Response> {
   return env.AI.run(WorkersAiModel.Free, body as ChatCompletionsMessagesInput, {
     gateway: {
-      id: route.gatewayId,
+      id: gatewayId,
       collectLog: true,
       metadata: {
         environment: env.ENVIRONMENT,
@@ -261,12 +261,19 @@ async function runRoute(
   env: Env,
 ): Promise<Response> {
   if (route.mode === RouteMode.AiGateway) {
-    return runAiGateway(body, route, request, env);
+    const upstreamResponse = await runAiGateway(body, route, request, env);
+    if (upstreamResponse.ok) return upstreamResponse;
+
+    console.warn(
+      `[ModelPool] dynamic route returned HTTP ${upstreamResponse.status}; using Workers AI fallback`,
+    );
+    body.model = WorkersAiModel.Free;
+    return runWorkersAi(body, route.gatewayId, request, env);
   }
 
   body.model = route.upstreamModel;
   return route.mode === RouteMode.WorkersAiTest
-    ? runWorkersAiTest(body, route, request, env)
+    ? runWorkersAi(body, route.gatewayId, request, env)
     : runDirectTest(body, route, request, env);
 }
 

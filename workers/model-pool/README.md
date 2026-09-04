@@ -28,7 +28,7 @@ The deployed test slice exposes `GET /health`, `GET /v1/models`, and `POST /v1/c
 
 The cloud test route uses `mode: workers-ai-test` and calls Workers AI through the `default` AI Gateway. It validates authentication, logical-model rewriting, quota, gateway observability, streaming, and tool calls without exposing an external provider key.
 
-The production route mode is `ai-gateway`. It invokes a named Cloudflare Dynamic Route through the Workers AI binding and the Gateway `compat/chat/completions` endpoint. Provider credentials, retries, timeouts, budgets, and fallback order belong to the Dynamic Route and are not duplicated in this Worker. A production KV value has this shape:
+The production route mode is `ai-gateway`. It invokes a named Cloudflare Dynamic Route through the Workers AI binding and the Gateway `compat/chat/completions` endpoint. Provider credentials, retries, timeouts, budgets, and the BYOK provider fallback order belong to the Dynamic Route. If every Dynamic Route provider fails, the Worker makes one final direct Workers AI binding call because Workers AI model nodes currently lose the OpenAI-compatible request body on this Dynamic Route path. A production KV value has this shape:
 
 ```json
 {
@@ -44,7 +44,7 @@ The `mode: direct-test` route remains available only for short-lived provider co
 
 ## Dynamic Route provisioning
 
-The checked-in route graph is `cloudflare/free-agent-openai.route.json`. Its current fallback order is Groq, OpenRouter, then Workers AI. Agnes is intentionally excluded while its origin rejects Cloudflare egress with HTTP 1015.
+The checked-in route graph is `cloudflare/free-agent-openai.route.json`. Its current BYOK fallback order is Groq then OpenRouter; the Worker provides the final Workers AI fallback. Agnes is intentionally excluded while its origin rejects Cloudflare egress with HTTP 1015.
 
 Cloudflare management calls for this graph require a dedicated API token. Give the token only these account permissions:
 
