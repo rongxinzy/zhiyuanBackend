@@ -1,5 +1,17 @@
 import { DurableObject } from 'cloudflare:workers';
 
+import {
+  incrementDailyRequestUsage,
+  incrementDailyTokenUsage,
+  ModelAccessDecision,
+  ModelAccessDenialCode,
+  ModelPoolIdentityKind,
+  type ModelAccessPolicy,
+  resolveModelAccess,
+} from './business-policy.ts';
+import { rewriteUpstreamResponse } from './response-rewrite.ts';
+import type { TokenUsage } from './usage.ts';
+
 interface DirectTestRoute {
   enabled: boolean;
   mode: 'direct-test';
@@ -54,24 +66,110 @@ const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const DYNAMIC_ROUTE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
 interface AuthenticatedUser {
+  kind: ModelPoolIdentityKind;
   userId: string;
 }
 
 interface AuthServiceBinding {
-  authenticate(accessToken: string): Promise<{ userId: string; expiresAt: number } | null>;
+  authenticate(
+    accessToken: string,
+  ): Promise<{ userId: string; expiresAt: number; kind: ModelPoolIdentityKind } | null>;
+}
+
+interface QuotaLimits {
+  dailyRequests: number | null;
+  dailyTokens: number | null;
+  monthlyTokens: number | null;
+}
+
+const QuotaDenialReason = {
+  DailyRequests: 'daily_requests',
+  DailyTokens: 'daily_tokens',
+  MonthlyTokens: 'monthly_tokens',
+} as const;
+
+interface RequestQuotaResult {
+  allowed: boolean;
+  reason?: (typeof QuotaDenialReason)[keyof typeof QuotaDenialReason];
+  remainingRequests: number | null;
+  remainingTokens: number | null;
 }
 
 export class UserQuota extends DurableObject<Env> {
-  async reserveRequest(limit: number): Promise<{ allowed: boolean; remaining: number }> {
-    const date = new Date().toISOString().slice(0, 10);
-    const key = `requests:${date}`;
-    const current = (await this.ctx.storage.get<number>(key)) ?? 0;
+  async reserveRequest(limits: QuotaLimits, date: string): Promise<RequestQuotaResult> {
+    const month = date.slice(0, 7);
+    const requestKey = `requests:${date}`;
+    const dailyTokenKey = `tokens:${date}`;
+    const monthlyTokenKey = `tokens:${month}`;
+    const [currentRequests, currentDailyTokens, currentMonthlyTokens] = await Promise.all([
+      this.ctx.storage.get<number>(requestKey),
+      this.ctx.storage.get<number>(dailyTokenKey),
+      this.ctx.storage.get<number>(monthlyTokenKey),
+    ]);
+    const requests = currentRequests ?? 0;
+    const dailyTokens = currentDailyTokens ?? 0;
+    const monthlyTokens = currentMonthlyTokens ?? 0;
+    const remainingTokens = Math.min(
+      limits.dailyTokens === null ? Number.POSITIVE_INFINITY : limits.dailyTokens - dailyTokens,
+      limits.monthlyTokens === null
+        ? Number.POSITIVE_INFINITY
+        : limits.monthlyTokens - monthlyTokens,
+    );
+    const normalizedRemainingTokens = Number.isFinite(remainingTokens)
+      ? Math.max(0, remainingTokens)
+      : null;
 
-    if (current >= limit) return { allowed: false, remaining: 0 };
+    if (limits.dailyRequests !== null && requests >= limits.dailyRequests) {
+      return {
+        allowed: false,
+        reason: QuotaDenialReason.DailyRequests,
+        remainingRequests: 0,
+        remainingTokens: normalizedRemainingTokens,
+      };
+    }
+    if (limits.dailyTokens !== null && dailyTokens >= limits.dailyTokens) {
+      return {
+        allowed: false,
+        reason: QuotaDenialReason.DailyTokens,
+        remainingRequests:
+          limits.dailyRequests === null ? null : Math.max(0, limits.dailyRequests - requests),
+        remainingTokens: 0,
+      };
+    }
+    if (limits.monthlyTokens !== null && monthlyTokens >= limits.monthlyTokens) {
+      return {
+        allowed: false,
+        reason: QuotaDenialReason.MonthlyTokens,
+        remainingRequests:
+          limits.dailyRequests === null ? null : Math.max(0, limits.dailyRequests - requests),
+        remainingTokens: 0,
+      };
+    }
 
-    const next = current + 1;
-    await this.ctx.storage.put(key, next);
-    return { allowed: true, remaining: Math.max(0, limit - next) };
+    const next = requests + 1;
+    await this.ctx.storage.put(requestKey, next);
+    return {
+      allowed: true,
+      remainingRequests:
+        limits.dailyRequests === null ? null : Math.max(0, limits.dailyRequests - next),
+      remainingTokens: normalizedRemainingTokens,
+    };
+  }
+
+  async recordTokens(usage: TokenUsage, date: string): Promise<void> {
+    const totalTokens = usage.inputTokens + usage.outputTokens;
+    if (totalTokens === 0) return;
+    const month = date.slice(0, 7);
+    const dailyTokenKey = `tokens:${date}`;
+    const monthlyTokenKey = `tokens:${month}`;
+    const [dailyTokens, monthlyTokens] = await Promise.all([
+      this.ctx.storage.get<number>(dailyTokenKey),
+      this.ctx.storage.get<number>(monthlyTokenKey),
+    ]);
+    await this.ctx.storage.put({
+      [dailyTokenKey]: (dailyTokens ?? 0) + totalTokens,
+      [monthlyTokenKey]: (monthlyTokens ?? 0) + totalTokens,
+    });
   }
 }
 
@@ -114,14 +212,14 @@ async function authenticateRequest(request: Request, env: Env): Promise<Authenti
   if (!token) return errorResponse('unauthorized', 'A valid ZhiYuan account session is required.', 401);
 
   if (env.ENVIRONMENT === 'staging' && secretsMatch(token, env.MODEL_POOL_TEST_TOKEN)) {
-    return { userId: 'staging-test-user' };
+    return { userId: 'staging-test-user', kind: ModelPoolIdentityKind.User };
   }
 
   try {
     const authService = env.AUTH_SERVICE as unknown as AuthServiceBinding;
     const identity = await authService.authenticate(token);
     return identity
-      ? { userId: identity.userId }
+      ? { userId: identity.userId, kind: identity.kind }
       : errorResponse('unauthorized', 'A valid ZhiYuan account session is required.', 401);
   } catch (error) {
     console.error('[ModelPool] account authentication failed:', error);
@@ -167,65 +265,6 @@ function isRouteConfig(value: unknown): value is RouteConfig {
 async function loadFreeRoute(env: Env): Promise<RouteConfig | null> {
   const value = await env.MODEL_CONFIG.get<unknown>(RouteKey.Free, 'json');
   return isRouteConfig(value) ? value : null;
-}
-
-function dailyRequestLimit(env: Env): number {
-  const value = Number.parseInt(env.TEST_DAILY_REQUEST_LIMIT, 10);
-  return Number.isSafeInteger(value) && value > 0 ? value : 100;
-}
-
-function rewriteResponseModel(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
-  const body = value as Record<string, unknown>;
-  return typeof body.model === 'string' ? { ...body, model: LogicalModel.Free } : body;
-}
-
-function rewriteSseLine(line: string): string {
-  if (!line.startsWith('data:')) return line;
-
-  const data = line.slice('data:'.length).trimStart();
-  if (!data || data === '[DONE]') return line;
-
-  try {
-    return `data: ${JSON.stringify(rewriteResponseModel(JSON.parse(data)))}`;
-  } catch {
-    return line;
-  }
-}
-
-function rewriteSseModel(body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let buffered = '';
-
-  return body.pipeThrough(
-    new TransformStream<Uint8Array, Uint8Array>({
-      transform(chunk, controller) {
-        buffered += decoder.decode(chunk, { stream: true });
-        const lines = buffered.split('\n');
-        buffered = lines.pop() ?? '';
-        for (const line of lines) controller.enqueue(encoder.encode(`${rewriteSseLine(line)}\n`));
-      },
-      flush(controller) {
-        buffered += decoder.decode();
-        if (buffered) controller.enqueue(encoder.encode(rewriteSseLine(buffered)));
-      },
-    }),
-  );
-}
-
-async function rewriteUpstreamResponse(upstreamResponse: Response): Promise<BodyInit | null> {
-  if (!upstreamResponse.body) return null;
-
-  const contentType = upstreamResponse.headers.get('content-type') ?? '';
-  if (contentType.includes('text/event-stream')) return rewriteSseModel(upstreamResponse.body);
-
-  if (contentType.includes('application/json')) {
-    const value: unknown = await upstreamResponse.json();
-    return JSON.stringify(rewriteResponseModel(value));
-  }
-
-  return upstreamResponse.body;
 }
 
 async function runDirectTest(
@@ -299,6 +338,7 @@ async function runRoute(
     console.warn(
       `[ModelPool] dynamic route returned HTTP ${upstreamResponse.status}; using Workers AI fallback`,
     );
+    await upstreamResponse.body?.cancel();
     body.model = WorkersAiModel.Free;
     return runWorkersAi(body, route.gatewayId, request, env);
   }
@@ -309,7 +349,86 @@ async function runRoute(
     : runDirectTest(body, route, request, env);
 }
 
-async function proxyChatCompletions(request: Request, env: Env): Promise<Response> {
+function modelAccessError(code: string): Response {
+  if (code === ModelAccessDenialCode.AccountDisabled) {
+    return errorResponse('account_disabled', 'The ZhiYuan account cannot use model services.', 403);
+  }
+  if (code === ModelAccessDenialCode.EntitlementRequired) {
+    return errorResponse(
+      'entitlement_required',
+      'The account is not entitled to use the requested logical model.',
+      403,
+    );
+  }
+  return errorResponse('model_unavailable', 'The requested logical model is unavailable.', 503);
+}
+
+async function loadAccessPolicy(
+  env: Env,
+  userId: string,
+  identityKind: ModelPoolIdentityKind,
+): Promise<ModelAccessPolicy | Response> {
+  try {
+    const access = await resolveModelAccess(
+      env.DB,
+      userId,
+      LogicalModel.Free,
+      identityKind,
+    );
+    return access.decision === ModelAccessDecision.Allowed
+      ? access.policy
+      : modelAccessError(access.code);
+  } catch (error) {
+    console.error('[ModelPool] user policy lookup failed:', error);
+    return errorResponse('policy_unavailable', 'Model access policy is temporarily unavailable.', 503);
+  }
+}
+
+function usageDate(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function recordRequestUsage(
+  env: Env,
+  policy: ModelAccessPolicy,
+  date: string,
+): Promise<void> {
+  try {
+    await incrementDailyRequestUsage(env.DB, policy.userId, LogicalModel.Free, date);
+  } catch (error) {
+    console.error('[ModelPool] request usage recording failed:', error);
+  }
+}
+
+async function recordTokenUsage(
+  env: Env,
+  policy: ModelAccessPolicy,
+  quota: DurableObjectStub<UserQuota>,
+  date: string,
+  usage: TokenUsage,
+): Promise<void> {
+  try {
+    await Promise.all([
+      quota.recordTokens(usage, date),
+      incrementDailyTokenUsage(
+        env.DB,
+        policy.userId,
+        LogicalModel.Free,
+        date,
+        usage.inputTokens,
+        usage.outputTokens,
+      ),
+    ]);
+  } catch (error) {
+    console.error('[ModelPool] token usage recording failed:', error);
+  }
+}
+
+async function proxyChatCompletions(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
   const authentication = await authenticateRequest(request, env);
   if (authentication instanceof Response) return authentication;
 
@@ -335,15 +454,48 @@ async function proxyChatCompletions(request: Request, env: Env): Promise<Respons
     return errorResponse('invalid_request', 'The request must include at least one message.', 400);
   }
 
+  const policy = await loadAccessPolicy(env, authentication.userId, authentication.kind);
+  if (policy instanceof Response) return policy;
+
   const route = await loadFreeRoute(env);
   if (!route) {
     return errorResponse('model_unavailable', 'The requested logical model has no active route.', 503);
   }
+  if (
+    env.ENVIRONMENT === 'production' &&
+    route.mode === RouteMode.AiGateway &&
+    route.routeName !== policy.openAiRoute
+  ) {
+    console.error('[ModelPool] D1 and KV route mappings do not match');
+    return errorResponse('model_unavailable', 'The requested logical model has no active route.', 503);
+  }
 
   const quotaId = env.USER_QUOTA.idFromName(authentication.userId);
-  const quota = await env.USER_QUOTA.get(quotaId).reserveRequest(dailyRequestLimit(env));
+  const quotaStub = env.USER_QUOTA.get(quotaId);
+  const date = usageDate();
+  const quota = await quotaStub.reserveRequest(
+    {
+      dailyRequests: policy.dailyRequestLimit,
+      dailyTokens: policy.dailyTokenLimit,
+      monthlyTokens: policy.monthlyTokenLimit,
+    },
+    date,
+  );
   if (!quota.allowed) {
-    return errorResponse('quota_exceeded', 'The daily request quota has been exhausted.', 429);
+    return errorResponse('quota_exceeded', 'The free model quota has been exhausted.', 429);
+  }
+  ctx.waitUntil(recordRequestUsage(env, policy, date));
+
+  if (quota.remainingTokens !== null) {
+    const configuredMaxTokens =
+      typeof body.max_tokens === 'number' && Number.isSafeInteger(body.max_tokens)
+        ? body.max_tokens
+        : 32_768;
+    body.max_tokens = Math.max(1, Math.min(configuredMaxTokens, quota.remainingTokens));
+  }
+
+  if (body.stream === true) {
+    body.stream_options = { include_usage: true };
   }
 
   let upstreamResponse: Response;
@@ -357,16 +509,32 @@ async function proxyChatCompletions(request: Request, env: Env): Promise<Respons
   const headers = new Headers();
   headers.set('cache-control', 'no-store');
   headers.set('content-type', upstreamResponse.headers.get('content-type') ?? 'application/json');
-  headers.set('x-zhiyuan-quota-remaining', String(quota.remaining));
+  if (quota.remainingRequests !== null) {
+    headers.set('x-zhiyuan-quota-remaining', String(quota.remainingRequests));
+  }
+  if (quota.remainingTokens !== null) {
+    headers.set('x-zhiyuan-token-quota-remaining', String(quota.remainingTokens));
+  }
 
-  return new Response(await rewriteUpstreamResponse(upstreamResponse), {
+  let resolveUsage: (usage: TokenUsage) => void = () => undefined;
+  const usage = new Promise<TokenUsage>(resolve => {
+    resolveUsage = resolve;
+  });
+  const responseBody = await rewriteUpstreamResponse(
+    upstreamResponse,
+    LogicalModel.Free,
+    resolveUsage,
+  );
+  ctx.waitUntil(usage.then(value => recordTokenUsage(env, policy, quotaStub, date, value)));
+
+  return new Response(responseBody, {
     status: upstreamResponse.status,
     headers,
   });
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     if (request.method === 'GET' && url.pathname === ApiPath.Health) {
@@ -381,6 +549,10 @@ export default {
       const authentication = await authenticateRequest(request, env);
       if (authentication instanceof Response) return authentication;
 
+      const policy = await loadAccessPolicy(env, authentication.userId, authentication.kind);
+      if (policy instanceof Response) {
+        return policy.status === 403 ? json({ object: 'list', data: [] }) : policy;
+      }
       const route = await loadFreeRoute(env);
       return json({
         object: 'list',
@@ -397,7 +569,7 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === ApiPath.ChatCompletions) {
-      return proxyChatCompletions(request, env);
+      return proxyChatCompletions(request, env, ctx);
     }
 
     return json(
