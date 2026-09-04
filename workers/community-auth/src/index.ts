@@ -6,11 +6,14 @@ import {
   completeAuthorization,
   createAuthorizationRequest,
   exchangeAuthorizationCode,
+  issueGuestAccessToken,
   isAuthorizationRequestId,
   refreshTokens,
   validateAuthorizationInput,
   validateAuthorizationRequest,
+  validateGuestTokenInput,
   type AuthorizationInput,
+  type GuestTokenInput,
   type RefreshInput,
   type TokenInput,
 } from './oauth.ts';
@@ -30,6 +33,27 @@ interface ChallengeRequest {
 
 interface VerificationRequest {
   code?: unknown;
+}
+
+async function issueGuestToken(request: Request, env: Env): Promise<Response> {
+  const input = (await parseRequest(request)) as GuestTokenInput | null;
+  if (!validateGuestTokenInput(input)) return json({ error: 'invalid_request' }, 400);
+
+  const remoteIp = request.headers.get('cf-connecting-ip') ?? 'unknown';
+  const rateLimit = await env.GUEST_TOKEN_RATE_LIMITER.limit({ key: remoteIp });
+  if (!rateLimit.success) {
+    return json({ error: 'rate_limited', retry_after_seconds: 60 }, 429, {
+      'retry-after': '60',
+    });
+  }
+
+  return json(
+    await issueGuestAccessToken(
+      env.SESSION_SIGNING_KEY,
+      input,
+      Math.floor(Date.now() / 1000),
+    ),
+  );
 }
 
 function json(payload: unknown, status = 200, extraHeaders?: HeadersInit): Response {
@@ -254,6 +278,9 @@ async function handleFetch(request: Request, env: Env): Promise<Response> {
       Math.floor(Date.now() / 1000),
     );
     return tokenSet ? json(tokenSet) : json({ error: 'invalid_grant' }, 400);
+  }
+  if (request.method === 'POST' && url.pathname === '/v1/auth/guest') {
+    return issueGuestToken(request, env);
   }
   const verificationPath = url.pathname.match(/^\/v1\/auth\/email\/challenges\/([^/]+)\/verify$/u);
   if (request.method === 'POST' && verificationPath) return verifyChallenge(request, env, verificationPath[1]);

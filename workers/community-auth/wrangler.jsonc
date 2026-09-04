@@ -37,6 +37,14 @@
         "limit": 5,
         "period": 60
       }
+    },
+    {
+      "name": "GUEST_TOKEN_RATE_LIMITER",
+      "namespace_id": "1103",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
     }
   ],
   "vars": {

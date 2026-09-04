@@ -2,7 +2,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { keyedDigest, toBase64Url } from '../src/crypto.ts';
-import { validateAccessToken } from '../src/oauth.ts';
+import {
+  AuthIdentityKind,
+  issueGuestAccessToken,
+  validateAccessToken,
+  validateGuestTokenInput,
+} from '../src/oauth.ts';
 
 const SIGNING_KEY = 'test-signing-key';
 const NOW = 1_800_000_000;
@@ -19,6 +24,7 @@ async function token(overrides: Record<string, unknown> = {}): Promise<string> {
         aud: 'zhiyuan-desktop',
         sub: USER_ID,
         email: 'user@example.com',
+        kind: AuthIdentityKind.User,
         iat: NOW,
         exp: NOW + 15 * 60,
         jti: TOKEN_ID,
@@ -36,6 +42,36 @@ describe('access token validation', () => {
       userId: USER_ID,
       email: 'user@example.com',
       expiresAt: NOW + 15 * 60,
+      kind: AuthIdentityKind.User,
+    });
+  });
+
+  it('accepts account tokens issued before the identity-kind claim was added', async () => {
+    assert.deepEqual(
+      await validateAccessToken(SIGNING_KEY, await token({ kind: undefined }), NOW + 1),
+      {
+        userId: USER_ID,
+        email: 'user@example.com',
+        expiresAt: NOW + 15 * 60,
+        kind: AuthIdentityKind.User,
+      },
+    );
+  });
+
+  it('issues a scoped guest token for a valid installation identifier', async () => {
+    const installationId = 'a3fa9f42-9720-4716-b85d-8e4d8ae07a82';
+    assert.equal(validateGuestTokenInput({ installation_id: installationId }), true);
+    assert.equal(validateGuestTokenInput({ installation_id: 'replaceable' }), false);
+
+    const tokenSet = await issueGuestAccessToken(
+      SIGNING_KEY,
+      { installation_id: installationId },
+      NOW,
+    );
+    assert.deepEqual(await validateAccessToken(SIGNING_KEY, tokenSet.access_token, NOW + 1), {
+      userId: `guest:${installationId}`,
+      expiresAt: NOW + 15 * 60,
+      kind: AuthIdentityKind.Guest,
     });
   });
 
@@ -43,6 +79,22 @@ describe('access token validation', () => {
     assert.equal(await validateAccessToken(SIGNING_KEY, await token({ exp: NOW }), NOW), null);
     assert.equal(await validateAccessToken(SIGNING_KEY, await token({ aud: 'another-client' }), NOW), null);
     assert.equal(await validateAccessToken(SIGNING_KEY, 'not-a-token', NOW), null);
+    assert.equal(
+      await validateAccessToken(
+        SIGNING_KEY,
+        await token({ sub: `guest:${USER_ID}`, kind: AuthIdentityKind.User }),
+        NOW,
+      ),
+      null,
+    );
+    assert.equal(
+      await validateAccessToken(
+        SIGNING_KEY,
+        await token({ sub: `guest:${USER_ID}`, kind: AuthIdentityKind.Guest }),
+        NOW,
+      ),
+      null,
+    );
 
     const valid = await token();
     assert.equal(await validateAccessToken(SIGNING_KEY, `${valid.slice(0, -1)}x`, NOW), null);
