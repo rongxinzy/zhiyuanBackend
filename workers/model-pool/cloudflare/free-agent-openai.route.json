@@ -1,0 +1,59 @@
+{
+  "name": "free-agent-openai",
+  "elements": [
+    {
+      "id": "start",
+      "type": "start",
+      "outputs": {
+        "next": { "elementId": "groq" }
+      }
+    },
+    {
+      "id": "groq",
+      "type": "model",
+      "properties": {
+        "provider": "groq",
+        "model": "openai/gpt-oss-20b",
+        "timeout": 15000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "openrouter" }
+      }
+    },
+    {
+      "id": "openrouter",
+      "type": "model",
+      "properties": {
+        "provider": "openrouter",
+        "model": "minimax/minimax-m3:free",
+        "timeout": 30000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "workers-ai" }
+      }
+    },
+    {
+      "id": "workers-ai",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/openai/gpt-oss-20b",
+        "timeout": 60000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "end" }
+      }
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "outputs": {}
+    }
+  ]
+}
