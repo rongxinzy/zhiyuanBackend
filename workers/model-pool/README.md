@@ -25,7 +25,7 @@ npm run migrate:model-pool
 npm run deploy:model-pool
 ```
 
-The deployed slice exposes `GET /health`, `GET /v1/models`, and `POST /v1/chat/completions`. Model endpoints require a current ZhiYuan desktop access token. `zhiyuan-free` is resolved through KV and daily request admission is serialized by a `UserQuota` instance named from the authenticated user ID.
+The deployed slice exposes `GET /health`, `GET /v1/models`, and `POST /v1/chat/completions`. Model endpoints require a current ZhiYuan desktop access token. On first use, the Worker provisions the account into the `FREE` plan with a `zhiyuan-free` entitlement. D1 is authoritative for account status, plan limits, entitlements, logical-model availability, route metadata, and user-level daily usage. KV holds the hot runtime route configuration. Request and token admission is serialized by a `UserQuota` instance named from the authenticated user ID.
 
 Staging additionally accepts `MODEL_POOL_TEST_TOKEN` for automated smoke tests. Production code never accepts that static token, even if the secret remains configured during a rollout. The `UPSTREAM_API_KEY` secret is used only by the short-lived `direct-test` route mode.
 
@@ -58,7 +58,7 @@ Store the token outside the repository. The ordinary Wrangler OAuth token can de
 
 BYOK secret names must follow Cloudflare's `{gateway_id}_{provider_slug}_{alias}` convention. For gateway `default`, this project uses `default_groq_default` and `default_openrouter_default`, each scoped to `ai_gateway`. After the provider configurations and route version are deployed, run the compatibility probes against the Dynamic Route before changing KV from `workers-ai-test` to `ai-gateway`.
 
-D1 marks `zhiyuan-free` active and records `default` as its OpenAI route. KV contains the test route's runtime model selection; D1 remains the business metadata source for the later user, plan, and entitlement implementation.
+D1 marks `zhiyuan-free` active, records `free-agent-openai` as its OpenAI route, and seeds the `FREE` plan with request and token limits. KV contains the runtime route configuration. Disabling a user, entitlement, logical model, or route mapping in D1 takes effect on the next request. Removing an existing user's entitlement does not cause it to be automatically recreated; automatic entitlement provisioning applies only when the user is first created.
 
 For a staging operator smoke test, store the bearer token in `workers/model-pool/.test-token` with file mode `0600`. The path is ignored by Git. Rotate the staging `MODEL_POOL_TEST_TOKEN` secret whenever this local token is replaced. Production smoke tests use a real desktop access token.
 

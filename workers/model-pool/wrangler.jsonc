@@ -21,8 +21,7 @@
     }
   ],
   "vars": {
-    "ENVIRONMENT": "production",
-    "TEST_DAILY_REQUEST_LIMIT": "100"
+    "ENVIRONMENT": "production"
   },
   "d1_databases": [
     {
@@ -63,6 +62,7 @@
     "staging": {
       "name": "zhiyuan-model-pool-staging",
       "workers_dev": true,
+      "routes": [],
       "ai": {
         "binding": "AI"
       },
@@ -74,8 +74,7 @@
         }
       ],
       "vars": {
-        "ENVIRONMENT": "staging",
-        "TEST_DAILY_REQUEST_LIMIT": "100"
+        "ENVIRONMENT": "staging"
       },
       "d1_databases": [
         {

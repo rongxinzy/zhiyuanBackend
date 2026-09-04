@@ -9,6 +9,7 @@
     "test:update": "node --experimental-strip-types --test workers/update/tests/*.test.ts",
     "check:catalog": "node ./node_modules/typescript/bin/tsc --project workers/model-catalog/tsconfig.json --noEmit",
     "check:model-pool": "node ./node_modules/typescript/bin/tsc --project workers/model-pool/tsconfig.json --noEmit",
+    "test:model-pool": "node --experimental-strip-types --test workers/model-pool/tests/*.test.ts",
     "check:community-auth": "node ./node_modules/typescript/bin/tsc --project workers/community-auth/tsconfig.json --noEmit",
     "test:community-auth": "node --experimental-strip-types --test workers/community-auth/tests/*.test.ts",
     "deploy": "node ./node_modules/wrangler/bin/wrangler.js deploy",
