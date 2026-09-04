@@ -26,7 +26,34 @@ npm run deploy:model-pool
 
 The deployed test slice exposes `GET /health`, `GET /v1/models`, and `POST /v1/chat/completions`. Model endpoints require `MODEL_POOL_TEST_TOKEN`; the provider key is stored only as the `UPSTREAM_API_KEY` Worker secret. `zhiyuan-free` is resolved through KV and daily request admission is serialized by `UserQuota`.
 
-The cloud test route uses `mode: workers-ai-test` and calls Workers AI through the `default` AI Gateway. It validates authentication, logical-model rewriting, quota, gateway observability, streaming, and tool calls without exposing an external provider key. The `mode: direct-test` route remains available only for local provider diagnostics and must not be exposed as a public model service.
+The cloud test route uses `mode: workers-ai-test` and calls Workers AI through the `default` AI Gateway. It validates authentication, logical-model rewriting, quota, gateway observability, streaming, and tool calls without exposing an external provider key.
+
+The production route mode is `ai-gateway`. It invokes a named Cloudflare Dynamic Route through the Workers AI binding and the Gateway `compat/chat/completions` endpoint. Provider credentials, retries, timeouts, budgets, and the BYOK provider fallback order belong to the Dynamic Route. If every Dynamic Route provider fails, the Worker makes one final direct Workers AI binding call because Workers AI model nodes currently lose the OpenAI-compatible request body on this Dynamic Route path. A production KV value has this shape:
+
+```json
+{
+  "enabled": true,
+  "mode": "ai-gateway",
+  "protocol": "openai",
+  "gatewayId": "default",
+  "routeName": "free-agent-openai"
+}
+```
+
+The `mode: direct-test` route remains available only for short-lived provider compatibility diagnostics. Restore the environment's normal route immediately after a diagnostic; never expose `direct-test` as the public model service.
+
+## Dynamic Route provisioning
+
+The checked-in route graph is `cloudflare/free-agent-openai.route.json`. Its current BYOK fallback order is Groq then OpenRouter; the Worker provides the final Workers AI fallback. Agnes is intentionally excluded while its origin rejects Cloudflare egress with HTTP 1015.
+
+Cloudflare management calls for this graph require a dedicated API token. Give the token only these account permissions:
+
+- AI Gateway: Read and Edit
+- Secrets Store: Read and Edit
+
+Store the token outside the repository. The ordinary Wrangler OAuth token can deploy Workers and manage Secrets Store values, but it cannot create or deploy AI Gateway Dynamic Routes.
+
+BYOK secret names must follow Cloudflare's `{gateway_id}_{provider_slug}_{alias}` convention. For gateway `default`, this project uses `default_groq_default` and `default_openrouter_default`, each scoped to `ai_gateway`. After the provider configurations and route version are deployed, run the compatibility probes against the Dynamic Route before changing KV from `workers-ai-test` to `ai-gateway`.
 
 D1 marks `zhiyuan-free` active and records `default` as its OpenAI route. KV contains the test route's runtime model selection; D1 remains the business metadata source for the later user, plan, and entitlement implementation.
 
@@ -36,4 +63,4 @@ For an operator smoke test, store the bearer token in `workers/model-pool/.test-
 
 Wrangler does not currently expose AI Gateway or Dynamic Route management commands. Create the Gateway, stored provider credentials, and Dynamic Routes through the Cloudflare dashboard or through the REST API with a dedicated Cloudflare API token that has `AI Gateway - Read` and `AI Gateway - Edit`. Wrangler OAuth tokens are not used as long-lived project credentials.
 
-Cloudflare Dynamic Routes currently run through the OpenAI-compatible `/compat/chat/completions` endpoint. Do not mark the Anthropic route mapping active until Cloudflare supports Dynamic Routes on the Anthropic-native endpoint or the architecture explicitly chooses a protocol adapter.
+Cloudflare Dynamic Routes currently run through the OpenAI-compatible `/compat/chat/completions` endpoint. The Worker passes `dynamic/<routeName>` as the upstream model and does not forward Cloudflare's provider/model response headers to clients. Do not mark the Anthropic route mapping active until Cloudflare supports Dynamic Routes on the Anthropic-native endpoint or the architecture explicitly chooses a protocol adapter.

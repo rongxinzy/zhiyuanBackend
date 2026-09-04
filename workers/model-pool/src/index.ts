@@ -8,6 +8,14 @@ interface DirectTestRoute {
   upstreamModel: string;
 }
 
+interface AiGatewayRoute {
+  enabled: boolean;
+  gatewayId: string;
+  mode: 'ai-gateway';
+  protocol: 'openai';
+  routeName: string;
+}
+
 interface WorkersAiTestRoute {
   enabled: boolean;
   gatewayId: string;
@@ -16,7 +24,7 @@ interface WorkersAiTestRoute {
   upstreamModel: typeof WorkersAiModel.Free;
 }
 
-type RouteConfig = DirectTestRoute | WorkersAiTestRoute;
+type RouteConfig = AiGatewayRoute | DirectTestRoute | WorkersAiTestRoute;
 
 const ApiPath = {
   ChatCompletions: '/v1/chat/completions',
@@ -29,6 +37,7 @@ const LogicalModel = {
 } as const;
 
 const RouteMode = {
+  AiGateway: 'ai-gateway',
   DirectTest: 'direct-test',
   WorkersAiTest: 'workers-ai-test',
 } as const;
@@ -42,6 +51,7 @@ const RouteKey = {
 } as const;
 
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+const DYNAMIC_ROUTE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
 export class UserQuota extends DurableObject<Env> {
   async reserveRequest(limit: number): Promise<{ allowed: boolean; remaining: number }> {
@@ -91,6 +101,15 @@ function isRouteConfig(value: unknown): value is RouteConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const route = value as Record<string, unknown>;
   if (route.enabled !== true || route.protocol !== 'openai') return false;
+
+  if (route.mode === RouteMode.AiGateway) {
+    return (
+      typeof route.gatewayId === 'string' &&
+      route.gatewayId.length > 0 &&
+      typeof route.routeName === 'string' &&
+      DYNAMIC_ROUTE_NAME_PATTERN.test(route.routeName)
+    );
+  }
 
   if (route.mode === RouteMode.WorkersAiTest) {
     return (
@@ -197,15 +216,33 @@ async function runDirectTest(
   });
 }
 
-async function runWorkersAiTest(
+async function runAiGateway(
   body: Record<string, unknown>,
-  route: WorkersAiTestRoute,
+  route: AiGatewayRoute,
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  body.model = `dynamic/${route.routeName}`;
+  return env.AI.gateway(route.gatewayId).run(
+    {
+      provider: 'compat',
+      endpoint: 'chat/completions',
+      headers: {},
+      query: body,
+    },
+    { signal: request.signal },
+  );
+}
+
+async function runWorkersAi(
+  body: Record<string, unknown>,
+  gatewayId: string,
   request: Request,
   env: Env,
 ): Promise<Response> {
   return env.AI.run(WorkersAiModel.Free, body as ChatCompletionsMessagesInput, {
     gateway: {
-      id: route.gatewayId,
+      id: gatewayId,
       collectLog: true,
       metadata: {
         environment: env.ENVIRONMENT,
@@ -223,9 +260,20 @@ async function runRoute(
   request: Request,
   env: Env,
 ): Promise<Response> {
+  if (route.mode === RouteMode.AiGateway) {
+    const upstreamResponse = await runAiGateway(body, route, request, env);
+    if (upstreamResponse.ok) return upstreamResponse;
+
+    console.warn(
+      `[ModelPool] dynamic route returned HTTP ${upstreamResponse.status}; using Workers AI fallback`,
+    );
+    body.model = WorkersAiModel.Free;
+    return runWorkersAi(body, route.gatewayId, request, env);
+  }
+
   body.model = route.upstreamModel;
   return route.mode === RouteMode.WorkersAiTest
-    ? runWorkersAiTest(body, route, request, env)
+    ? runWorkersAi(body, route.gatewayId, request, env)
     : runDirectTest(body, route, request, env);
 }
 
