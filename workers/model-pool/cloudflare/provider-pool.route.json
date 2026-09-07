@@ -1,0 +1,136 @@
+{
+  "enabled": true,
+  "mode": "provider-pool",
+  "protocol": "openai",
+  "gatewayId": "default",
+  "routes": {
+    "chat": {
+      "name": "free-chat-openai",
+      "maxOutputTokens": 4096,
+      "nodes": [
+        {
+          "id": "tokenrouter-chat",
+          "kind": "direct",
+          "baseUrl": "https://api.tokenrouter.com/v1",
+          "model": "z-ai/glm-5.3-free",
+          "poolId": "tokenrouter",
+          "timeoutMs": 30000,
+          "maxAliasAttempts": 2,
+          "aliases": [
+            { "id": "default", "quotaScopeId": "tokenrouter-default", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_1" },
+            { "id": "pool-2", "quotaScopeId": "tokenrouter-pool-2", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_2" },
+            { "id": "pool-3", "quotaScopeId": "tokenrouter-pool-3", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_3" },
+            { "id": "pool-4", "quotaScopeId": "tokenrouter-pool-4", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_4" }
+          ]
+        },
+        {
+          "id": "openrouter-chat",
+          "kind": "gateway",
+          "provider": "openrouter",
+          "model": "minimax/minimax-m3:free",
+          "poolId": "openrouter",
+          "timeoutMs": 30000,
+          "maxAliasAttempts": 2,
+          "aliases": [
+            { "id": "default", "quotaScopeId": "openrouter-default", "weight": 1 },
+            { "id": "pool-2", "quotaScopeId": "openrouter-pool-2", "weight": 1 },
+            { "id": "pool-3", "quotaScopeId": "openrouter-pool-3", "weight": 1 },
+            { "id": "pool-4", "quotaScopeId": "openrouter-pool-4", "weight": 1 },
+            { "id": "pool-5", "quotaScopeId": "openrouter-pool-5", "weight": 1 },
+            { "id": "pool-6", "quotaScopeId": "openrouter-pool-6", "weight": 1 }
+          ]
+        },
+        {
+          "id": "workers-ai-chat",
+          "kind": "workers-ai",
+          "model": "@cf/ibm-granite/granite-4.0-h-micro"
+        },
+        {
+          "id": "groq-chat",
+          "kind": "gateway",
+          "provider": "groq",
+          "model": "openai/gpt-oss-20b",
+          "poolId": "groq",
+          "timeoutMs": 20000,
+          "maxAliasAttempts": 2,
+          "aliases": [
+            { "id": "default", "quotaScopeId": "groq-default", "weight": 1 },
+            { "id": "pool-2", "quotaScopeId": "groq-pool-2", "weight": 1 },
+            { "id": "pool-3", "quotaScopeId": "groq-pool-3", "weight": 1 },
+            { "id": "pool-4", "quotaScopeId": "groq-pool-4", "weight": 1 }
+          ]
+        },
+        {
+          "id": "kimi-chat",
+          "kind": "gateway",
+          "provider": "custom-kimi-code",
+          "model": "kimi-for-coding",
+          "poolId": "kimi",
+          "timeoutMs": 30000,
+          "maxAliasAttempts": 1,
+          "aliases": [
+            { "id": "default", "quotaScopeId": "kimi-default", "weight": 1 }
+          ]
+        }
+      ]
+    },
+    "work": {
+      "name": "free-work-openai",
+      "maxOutputTokens": 16384,
+      "nodes": [
+        {
+          "id": "tokenrouter-work",
+          "kind": "direct",
+          "baseUrl": "https://api.tokenrouter.com/v1",
+          "model": "z-ai/glm-5.3-free",
+          "poolId": "tokenrouter",
+          "timeoutMs": 45000,
+          "maxAliasAttempts": 2,
+          "aliases": [
+            { "id": "default", "quotaScopeId": "tokenrouter-default", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_1" },
+            { "id": "pool-2", "quotaScopeId": "tokenrouter-pool-2", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_2" },
+            { "id": "pool-3", "quotaScopeId": "tokenrouter-pool-3", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_3" },
+            { "id": "pool-4", "quotaScopeId": "tokenrouter-pool-4", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_4" }
+          ]
+        },
+        {
+          "id": "groq-work",
+          "kind": "gateway",
+          "provider": "groq",
+          "model": "openai/gpt-oss-20b",
+          "poolId": "groq",
+          "timeoutMs": 30000,
+          "maxAliasAttempts": 2,
+          "aliases": [
+            { "id": "default", "quotaScopeId": "groq-default", "weight": 1 },
+            { "id": "pool-2", "quotaScopeId": "groq-pool-2", "weight": 1 },
+            { "id": "pool-3", "quotaScopeId": "groq-pool-3", "weight": 1 },
+            { "id": "pool-4", "quotaScopeId": "groq-pool-4", "weight": 1 }
+          ]
+        },
+        {
+          "id": "workers-ai-work",
+          "kind": "workers-ai",
+          "model": "@cf/zai-org/glm-4.7-flash"
+        },
+        {
+          "id": "kimi-work",
+          "kind": "gateway",
+          "provider": "custom-kimi-code",
+          "model": "kimi-for-coding",
+          "poolId": "kimi",
+          "timeoutMs": 45000,
+          "maxAliasAttempts": 1,
+          "aliases": [
+            { "id": "default", "quotaScopeId": "kimi-default", "weight": 1 }
+          ]
+        },
+        {
+          "id": "workers-ai-work-fallback",
+          "kind": "workers-ai",
+          "model": "@cf/openai/gpt-oss-20b"
+        }
+      ]
+    }
+  }
+}

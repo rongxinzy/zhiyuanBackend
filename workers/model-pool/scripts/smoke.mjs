@@ -8,6 +8,16 @@ const LogicalModel = {
   Free: 'zhiyuan-free',
 };
 
+const ModelPoolHeader = {
+  ConversationId: 'x-zhiyuan-conversation-id',
+  Workload: 'x-zhiyuan-workload',
+};
+
+const ModelPoolWorkload = {
+  Chat: 'chat',
+  Work: 'work',
+};
+
 const ApiPath = {
   ChatCompletions: '/v1/chat/completions',
   Health: '/health',
@@ -99,10 +109,12 @@ async function readJson(response, label) {
   }
 }
 
-function authHeaders(token) {
+function authHeaders(token, workload = ModelPoolWorkload.Chat) {
   return {
     authorization: `Bearer ${token}`,
     'content-type': 'application/json',
+    [ModelPoolHeader.ConversationId]: randomUUID(),
+    [ModelPoolHeader.Workload]: workload,
   };
 }
 
@@ -163,7 +175,7 @@ async function verifyChat(baseUrl, token, identity = 'authenticated') {
 async function verifyToolCalling(baseUrl, token) {
   const response = await request(baseUrl, ApiPath.ChatCompletions, {
     method: 'POST',
-    headers: authHeaders(token),
+    headers: authHeaders(token, ModelPoolWorkload.Work),
     body: JSON.stringify({
       model: LogicalModel.Free,
       max_tokens: 128,
@@ -190,7 +202,7 @@ async function verifyToolCalling(baseUrl, token) {
   const toolCalls = body.choices?.[0]?.message?.tool_calls;
   assert(Array.isArray(toolCalls) && toolCalls.length > 0, 'model did not return a tool call');
   assert(toolCalls[0]?.function?.name === 'get_current_time', 'model called an unexpected tool');
-  console.log('PASS required tool calling');
+  console.log('PASS Work route required tool calling');
 }
 
 async function verifyStreaming(baseUrl, token) {
@@ -236,6 +248,8 @@ async function main() {
   const guestToken = await issueGuestToken(authBaseUrl);
   await verifyModels(baseUrl, guestToken, 'guest');
   await verifyChat(baseUrl, guestToken, 'guest');
+  await verifyToolCalling(baseUrl, guestToken);
+  await verifyStreaming(baseUrl, guestToken);
 
   if (guestOnly) {
     console.log(`Model Pool guest smoke passed: ${new URL(baseUrl).origin}`);

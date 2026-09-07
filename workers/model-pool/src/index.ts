@@ -9,34 +9,29 @@ import {
   type ModelAccessPolicy,
   resolveModelAccess,
 } from './business-policy.ts';
+import {
+  ProviderPool,
+} from './provider-pool.ts';
+import {
+  observationFromResponse,
+  shouldTryNextProvider,
+} from './provider-observation.ts';
 import { rewriteUpstreamResponse } from './response-rewrite.ts';
+import {
+  isRouteConfig,
+  ModelPoolWorkload,
+  ProviderNodeKind,
+  resolveConversationId,
+  resolveRequestWorkload,
+  RouteMode,
+  type AiGatewayRoute,
+  type DirectProviderNode,
+  type DirectTestRoute,
+  type GatewayProviderNode,
+  type ProviderPoolRoute,
+  type RouteConfig,
+} from './routing.ts';
 import type { TokenUsage } from './usage.ts';
-
-interface DirectTestRoute {
-  enabled: boolean;
-  mode: 'direct-test';
-  protocol: 'openai';
-  upstreamBaseUrl: string;
-  upstreamModel: string;
-}
-
-interface AiGatewayRoute {
-  enabled: boolean;
-  gatewayId: string;
-  mode: 'ai-gateway';
-  protocol: 'openai';
-  routeName: string;
-}
-
-interface WorkersAiTestRoute {
-  enabled: boolean;
-  gatewayId: string;
-  mode: 'workers-ai-test';
-  protocol: 'openai';
-  upstreamModel: typeof WorkersAiModel.Free;
-}
-
-type RouteConfig = AiGatewayRoute | DirectTestRoute | WorkersAiTestRoute;
 
 const ApiPath = {
   ChatCompletions: '/v1/chat/completions',
@@ -48,12 +43,6 @@ const LogicalModel = {
   Free: 'zhiyuan-free',
 } as const;
 
-const RouteMode = {
-  AiGateway: 'ai-gateway',
-  DirectTest: 'direct-test',
-  WorkersAiTest: 'workers-ai-test',
-} as const;
-
 const WorkersAiModel = {
   Free: '@cf/openai/gpt-oss-20b',
 } as const;
@@ -63,7 +52,6 @@ const RouteKey = {
 } as const;
 
 const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
-const DYNAMIC_ROUTE_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 
 interface AuthenticatedUser {
   kind: ModelPoolIdentityKind;
@@ -227,41 +215,6 @@ async function authenticateRequest(request: Request, env: Env): Promise<Authenti
   }
 }
 
-function isRouteConfig(value: unknown): value is RouteConfig {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const route = value as Record<string, unknown>;
-  if (route.enabled !== true || route.protocol !== 'openai') return false;
-
-  if (route.mode === RouteMode.AiGateway) {
-    return (
-      typeof route.gatewayId === 'string' &&
-      route.gatewayId.length > 0 &&
-      typeof route.routeName === 'string' &&
-      DYNAMIC_ROUTE_NAME_PATTERN.test(route.routeName)
-    );
-  }
-
-  if (route.mode === RouteMode.WorkersAiTest) {
-    return (
-      typeof route.gatewayId === 'string' &&
-      route.gatewayId.length > 0 &&
-      route.upstreamModel === WorkersAiModel.Free
-    );
-  }
-
-  if (
-    route.mode !== RouteMode.DirectTest ||
-    typeof route.upstreamBaseUrl !== 'string' ||
-    typeof route.upstreamModel !== 'string'
-  ) return false;
-
-  try {
-    return new URL(route.upstreamBaseUrl).protocol === 'https:' && route.upstreamModel.length > 0;
-  } catch {
-    return false;
-  }
-}
-
 async function loadFreeRoute(env: Env): Promise<RouteConfig | null> {
   const value = await env.MODEL_CONFIG.get<unknown>(RouteKey.Free, 'json');
   return isRouteConfig(value) ? value : null;
@@ -308,10 +261,12 @@ async function runAiGateway(
 async function runWorkersAi(
   body: Record<string, unknown>,
   gatewayId: string,
+  model: string,
   request: Request,
   env: Env,
 ): Promise<Response> {
-  return env.AI.run(WorkersAiModel.Free, body as ChatCompletionsMessagesInput, {
+  body.model = model;
+  return (await env.AI.run(model, body as ChatCompletionsMessagesInput, {
     gateway: {
       id: gatewayId,
       collectLog: true,
@@ -322,7 +277,192 @@ async function runWorkersAi(
     },
     returnRawResponse: true,
     signal: request.signal,
-  });
+  })) as unknown as Response;
+}
+
+interface RoutedResponse {
+  rejectLease?: () => Promise<void>;
+  releaseLease?: () => Promise<void>;
+  response: Response;
+}
+
+function failedProviderObservation() {
+  return {
+    status: 503,
+    retryAfterMs: null,
+    limitRequests: null,
+    remainingRequests: null,
+    resetRequestsAt: null,
+    limitTokens: null,
+    remainingTokens: null,
+    resetTokensAt: null,
+  };
+}
+
+async function runGatewayProvider(
+  body: Record<string, unknown>,
+  route: ProviderPoolRoute,
+  node: GatewayProviderNode,
+  request: Request,
+  env: Env,
+  affinityKey: string,
+): Promise<RoutedResponse | null> {
+  const poolId = env.PROVIDER_POOL.idFromName(`${route.gatewayId}:${node.poolId}`);
+  const pool = env.PROVIDER_POOL.get(poolId);
+  const excludedCandidateIds: string[] = [];
+  const gatewayUrl = await env.AI.gateway(route.gatewayId).getUrl(node.provider);
+  const upstreamUrl = new URL('chat/completions', `${gatewayUrl.replace(/\/$/, '')}/`);
+
+  for (let attempt = 0; attempt < node.maxAliasAttempts; attempt += 1) {
+    const lease = await pool.acquire(node, affinityKey, excludedCandidateIds);
+    if (!lease) return null;
+    excludedCandidateIds.push(lease.candidateId);
+
+    let response: Response;
+    try {
+      response = await fetch(upstreamUrl, {
+        method: 'POST',
+        headers: {
+          accept: request.headers.get('accept') ?? 'application/json',
+          'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}`,
+          'cf-aig-byok-alias': lease.alias,
+          'content-type': 'application/json',
+          'user-agent': 'ZhiYuanModelPool/1.0',
+        },
+        body: JSON.stringify({ ...body, model: node.model }),
+        signal: AbortSignal.any([request.signal, AbortSignal.timeout(node.timeoutMs)]),
+      });
+    } catch (error) {
+      await pool.report(lease, failedProviderObservation());
+      console.warn(`[ModelPool] provider ${node.id} request attempt failed:`, error);
+      continue;
+    }
+
+    const observation = observationFromResponse(response);
+    if (response.ok) {
+      await pool.observe(lease, observation);
+      return {
+        response,
+        rejectLease: () => pool.report(lease, failedProviderObservation()),
+        releaseLease: () => pool.release(lease.leaseId),
+      };
+    }
+
+    await pool.report(lease, observation);
+    if (!shouldTryNextProvider(response.status)) return { response };
+    console.warn(`[ModelPool] provider ${node.id} returned HTTP ${response.status}`);
+    await response.body?.cancel();
+  }
+  return null;
+}
+
+async function runDirectProvider(
+  body: Record<string, unknown>,
+  route: ProviderPoolRoute,
+  node: DirectProviderNode,
+  request: Request,
+  env: Env,
+  affinityKey: string,
+): Promise<RoutedResponse | null> {
+  const poolId = env.PROVIDER_POOL.idFromName(`${route.gatewayId}:${node.poolId}`);
+  const pool = env.PROVIDER_POOL.get(poolId);
+  const excludedCandidateIds: string[] = [];
+  const upstreamUrl = new URL('chat/completions', `${node.baseUrl.replace(/\/$/, '')}/`);
+
+  for (let attempt = 0; attempt < node.maxAliasAttempts; attempt += 1) {
+    const lease = await pool.acquire(node, affinityKey, excludedCandidateIds);
+    if (!lease) return null;
+    excludedCandidateIds.push(lease.candidateId);
+    const alias = node.aliases.find(candidate => candidate.id === lease.alias);
+    const secret = alias
+      ? (env as unknown as Record<string, unknown>)[alias.secretBinding]
+      : null;
+    if (typeof secret !== 'string' || !secret) {
+      await pool.report(lease, { ...failedProviderObservation(), status: 401 });
+      console.error(`[ModelPool] provider ${node.id} secret binding is unavailable`);
+      continue;
+    }
+
+    let response: Response;
+    try {
+      response = await fetch(upstreamUrl, {
+        method: 'POST',
+        headers: {
+          accept: request.headers.get('accept') ?? 'application/json',
+          authorization: `Bearer ${secret}`,
+          'content-type': 'application/json',
+          'user-agent': 'ZhiYuanModelPool/1.0',
+        },
+        body: JSON.stringify({ ...body, model: node.model }),
+        signal: AbortSignal.any([request.signal, AbortSignal.timeout(node.timeoutMs)]),
+      });
+    } catch (error) {
+      await pool.report(lease, failedProviderObservation());
+      console.warn(`[ModelPool] provider ${node.id} request attempt failed:`, error);
+      continue;
+    }
+
+    const observation = observationFromResponse(response);
+    if (response.ok) {
+      await pool.observe(lease, observation);
+      return {
+        response,
+        rejectLease: () => pool.report(lease, failedProviderObservation()),
+        releaseLease: () => pool.release(lease.leaseId),
+      };
+    }
+
+    await pool.report(lease, observation);
+    if (!shouldTryNextProvider(response.status)) return { response };
+    console.warn(`[ModelPool] provider ${node.id} returned HTTP ${response.status}`);
+    await response.body?.cancel();
+  }
+  return null;
+}
+
+async function runProviderPool(
+  body: Record<string, unknown>,
+  route: ProviderPoolRoute,
+  request: Request,
+  env: Env,
+  workload: ModelPoolWorkload,
+  conversationId: string,
+): Promise<RoutedResponse> {
+  const workloadRoute = route.routes[workload];
+  for (const node of workloadRoute.nodes) {
+    if (node.kind === ProviderNodeKind.WorkersAi) {
+      try {
+        const response = await runWorkersAi(body, route.gatewayId, node.model, request, env);
+        if (response.ok || !shouldTryNextProvider(response.status)) return { response };
+        console.warn(`[ModelPool] Workers AI node ${node.id} returned HTTP ${response.status}`);
+        await response.body?.cancel();
+      } catch (error) {
+        console.warn(`[ModelPool] Workers AI node ${node.id} request failed:`, error);
+      }
+      continue;
+    }
+
+    const result =
+      node.kind === ProviderNodeKind.Direct
+        ? await runDirectProvider(
+            body,
+            route,
+            node,
+            request,
+            env,
+            `${workload}:${conversationId}`,
+          )
+        : await runGatewayProvider(
+            body,
+            route,
+            node,
+            request,
+            env,
+            `${workload}:${conversationId}`,
+          );
+    if (result) return result;
+  }
+  throw new Error(`No ${workload} provider is currently available`);
 }
 
 async function runRoute(
@@ -330,23 +470,34 @@ async function runRoute(
   route: RouteConfig,
   request: Request,
   env: Env,
-): Promise<Response> {
+  workload: ModelPoolWorkload,
+  conversationId: string,
+): Promise<RoutedResponse> {
+  if (route.mode === RouteMode.ProviderPool) {
+    return runProviderPool(body, route, request, env, workload, conversationId);
+  }
+
   if (route.mode === RouteMode.AiGateway) {
     const upstreamResponse = await runAiGateway(body, route, request, env);
-    if (upstreamResponse.ok) return upstreamResponse;
+    if (upstreamResponse.ok) return { response: upstreamResponse };
 
     console.warn(
       `[ModelPool] dynamic route returned HTTP ${upstreamResponse.status}; using Workers AI fallback`,
     );
     await upstreamResponse.body?.cancel();
     body.model = WorkersAiModel.Free;
-    return runWorkersAi(body, route.gatewayId, request, env);
+    return {
+      response: await runWorkersAi(body, route.gatewayId, WorkersAiModel.Free, request, env),
+    };
   }
 
   body.model = route.upstreamModel;
-  return route.mode === RouteMode.WorkersAiTest
-    ? runWorkersAi(body, route.gatewayId, request, env)
-    : runDirectTest(body, route, request, env);
+  return {
+    response:
+      route.mode === RouteMode.WorkersAiTest
+        ? await runWorkersAi(body, route.gatewayId, route.upstreamModel, request, env)
+        : await runDirectTest(body, route, request, env),
+  };
 }
 
 function modelAccessError(code: string): Response {
@@ -461,11 +612,14 @@ async function proxyChatCompletions(
   if (!route) {
     return errorResponse('model_unavailable', 'The requested logical model has no active route.', 503);
   }
-  if (
-    env.ENVIRONMENT === 'production' &&
-    route.mode === RouteMode.AiGateway &&
-    route.routeName !== policy.openAiRoute
-  ) {
+  const workload = resolveRequestWorkload(request, body);
+  const conversationId = resolveConversationId(request);
+  const expectedRoute =
+    workload === ModelPoolWorkload.Work ? policy.workOpenAiRoute : policy.chatOpenAiRoute;
+  const actualRoute =
+    route.mode === RouteMode.ProviderPool ? route.routes[workload].name :
+      route.mode === RouteMode.AiGateway ? route.routeName : expectedRoute;
+  if (env.ENVIRONMENT === 'production' && actualRoute !== expectedRoute) {
     console.error('[ModelPool] D1 and KV route mappings do not match');
     return errorResponse('model_unavailable', 'The requested logical model has no active route.', 503);
   }
@@ -486,25 +640,37 @@ async function proxyChatCompletions(
   }
   ctx.waitUntil(recordRequestUsage(env, policy, date));
 
+  const routeMaxOutputTokens =
+    route.mode === RouteMode.ProviderPool ? route.routes[workload].maxOutputTokens : 32_768;
   if (quota.remainingTokens !== null) {
     const configuredMaxTokens =
       typeof body.max_tokens === 'number' && Number.isSafeInteger(body.max_tokens)
         ? body.max_tokens
-        : 32_768;
-    body.max_tokens = Math.max(1, Math.min(configuredMaxTokens, quota.remainingTokens));
+        : routeMaxOutputTokens;
+    body.max_tokens = Math.max(
+      1,
+      Math.min(configuredMaxTokens, quota.remainingTokens, routeMaxOutputTokens),
+    );
+  } else {
+    const configuredMaxTokens =
+      typeof body.max_tokens === 'number' && Number.isSafeInteger(body.max_tokens)
+        ? body.max_tokens
+        : routeMaxOutputTokens;
+    body.max_tokens = Math.max(1, Math.min(configuredMaxTokens, routeMaxOutputTokens));
   }
 
   if (body.stream === true) {
     body.stream_options = { include_usage: true };
   }
 
-  let upstreamResponse: Response;
+  let routedResponse: RoutedResponse;
   try {
-    upstreamResponse = await runRoute(body, route, request, env);
+    routedResponse = await runRoute(body, route, request, env, workload, conversationId);
   } catch (error) {
     console.error('[ModelPool] upstream inference failed:', error);
     return errorResponse('upstream_error', 'The model service is temporarily unavailable.', 502);
   }
+  const upstreamResponse = routedResponse.response;
 
   const headers = new Headers();
   headers.set('cache-control', 'no-store');
@@ -520,12 +686,27 @@ async function proxyChatCompletions(
   const usage = new Promise<TokenUsage>(resolve => {
     resolveUsage = resolve;
   });
-  const responseBody = await rewriteUpstreamResponse(
-    upstreamResponse,
-    LogicalModel.Free,
-    resolveUsage,
+  let responseBody: BodyInit | null;
+  try {
+    responseBody = await rewriteUpstreamResponse(
+      upstreamResponse,
+      LogicalModel.Free,
+      resolveUsage,
+    );
+  } catch (error) {
+    await (routedResponse.rejectLease?.() ?? routedResponse.releaseLease?.());
+    console.error('[ModelPool] upstream response processing failed:', error);
+    return errorResponse('upstream_error', 'The model service returned an invalid response.', 502);
+  }
+  ctx.waitUntil(
+    usage.then(async value => {
+      try {
+        await recordTokenUsage(env, policy, quotaStub, date, value);
+      } finally {
+        await routedResponse.releaseLease?.();
+      }
+    }),
   );
-  ctx.waitUntil(usage.then(value => recordTokenUsage(env, policy, quotaStub, date, value)));
 
   return new Response(responseBody, {
     status: upstreamResponse.status,
@@ -583,3 +764,5 @@ export default {
     );
   },
 } satisfies ExportedHandler<Env>;
+
+export { ProviderPool };
