@@ -20,6 +20,8 @@ const activeSnapshot: ModelAccessSnapshot = {
   entitlement_expires_at: null,
   route_enabled: 1,
   openai_route: 'free-agent-openai',
+  chat_openai_route: 'free-chat-openai',
+  work_openai_route: 'free-work-openai',
 };
 
 test('assigns separate default plans to guest and account identities', () => {
@@ -34,7 +36,8 @@ test('returns the plan limits and route for an entitled active user', () => {
       dailyRequestLimit: 100,
       dailyTokenLimit: 100_000,
       monthlyTokenLimit: 3_000_000,
-      openAiRoute: 'free-agent-openai',
+      chatOpenAiRoute: 'free-chat-openai',
+      workOpenAiRoute: 'free-work-openai',
       userId: 'user-1',
     },
   });
@@ -79,7 +82,12 @@ test('denies disabled logical models and route mappings', () => {
   for (const snapshot of [
     { ...activeSnapshot, model_enabled: 0 },
     { ...activeSnapshot, route_enabled: 0 },
-    { ...activeSnapshot, openai_route: null },
+    {
+      ...activeSnapshot,
+      openai_route: null,
+      chat_openai_route: null,
+      work_openai_route: null,
+    },
   ]) {
     assert.deepEqual(evaluateModelAccess(snapshot, 'user-1'), {
       decision: ModelAccessDecision.Denied,

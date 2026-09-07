@@ -9,7 +9,7 @@ This directory owns the Cloudflare resources for the ZhiYuan Model Pool business
 | Production | `zhiyuan-model-pool` | `zhiyuan-model-pool` | `zhiyuan-model-pool-config` |
 | Staging | `zhiyuan-model-pool-staging` | `zhiyuan-model-pool-staging` | `zhiyuan-model-pool-config-staging` |
 
-The `UserQuota` SQLite Durable Object namespace is provisioned by the first deployment of each Worker environment.
+The `UserQuota` and `ProviderPool` SQLite Durable Object namespaces are provisioned by the first deployment of each Worker environment.
 Production is exposed only through `https://model.rongxzyai.com`; the `workers.dev` route remains enabled only for staging.
 
 ## Commands
@@ -34,23 +34,40 @@ Staging additionally accepts `MODEL_POOL_TEST_TOKEN` for automated smoke tests. 
 
 The cloud test route uses `mode: workers-ai-test` and calls Workers AI through the `default` AI Gateway. It validates authentication, logical-model rewriting, quota, gateway observability, streaming, and tool calls without exposing an external provider key.
 
-The production route mode is `ai-gateway`. It invokes a named Cloudflare Dynamic Route through the Workers AI binding and the Gateway `compat/chat/completions` endpoint. Provider credentials, retries, timeouts, budgets, and the BYOK provider fallback order belong to the Dynamic Route. If every Dynamic Route provider fails, the Worker makes one final direct Workers AI binding call because Workers AI model nodes currently lose the OpenAI-compatible request body on this Dynamic Route path. A production KV value has this shape:
+The production route mode is `provider-pool`. The desktop marks each request as `chat` or `work`; the Worker falls back to tool-presence inference only for older clients. D1 stores separate policy route names for both workloads, while one KV document owns the hot provider order and output-token ceilings.
+
+Each keyed provider has one `ProviderPool` Durable Object shared by Chat and Work. It uses weighted rendezvous hashing for conversation affinity, divides scores by current in-flight requests, and reduces weights from real `x-ratelimit-*` response headers. A 401 quarantines an alias for 24 hours; 402/403 marks it exhausted until reset (or one hour); 408/429/5xx use bounded exponential cooldown. Retryable failures move to another alias and then the next provider. Successful streams retain their lease until completion or cancellation, so concurrent users spread across keys instead of stampeding one alias.
+
+Chat is capped at 4,096 output tokens and prioritizes free or very low-cost small models. Work is capped at 16,384 output tokens and only admits models verified for tool calling. The checked-in KV document is `cloudflare/provider-pool.route.json`.
+
+A production KV value has this shape:
 
 ```json
 {
   "enabled": true,
-  "mode": "ai-gateway",
+  "mode": "provider-pool",
   "protocol": "openai",
   "gatewayId": "default",
-  "routeName": "free-agent-openai"
+  "routes": {
+    "chat": {
+      "name": "free-chat-openai",
+      "maxOutputTokens": 4096,
+      "nodes": []
+    },
+    "work": {
+      "name": "free-work-openai",
+      "maxOutputTokens": 16384,
+      "nodes": []
+    }
+  }
 }
 ```
 
 The `mode: direct-test` route remains available only for short-lived provider compatibility diagnostics. Restore the environment's normal route immediately after a diagnostic; never expose `direct-test` as the public model service.
 
-## Dynamic Route provisioning
+## Provider provisioning
 
-The checked-in route graph is `cloudflare/free-agent-openai.route.json`. Its current BYOK fallback order is Groq, OpenRouter, then the standard `kimi-for-coding` model (Kimi K2.7 Code); the Worker provides the final Workers AI fallback. The route intentionally avoids Kimi K3 and Kimi HighSpeed so the membership quota lasts longer. Agnes is intentionally excluded while its origin rejects Cloudflare egress with HTTP 1015.
+AI Gateway provider-specific endpoints are used for Groq, OpenRouter, and standard `kimi-for-coding` aliases because the Workers AI binding can only select the provider's `default` alias. TokenRouter is called directly by the Worker because its AI Gateway custom-provider path returns HTTP 200 with an empty HTML response even though Worker egress returns valid OpenAI JSON. Its four credentials remain Worker secrets and use the same Durable Object scheduling and circuit-breaker path. The pool intentionally excludes Kimi K3 and Kimi HighSpeed so the membership quota lasts longer. Agnes remains excluded while its origin rejects Cloudflare egress with HTTP 1015.
 
 Protocol admission results and the current Anthropic activation boundary are recorded in `PROVIDER_COMPATIBILITY.md`.
 
@@ -61,9 +78,9 @@ Cloudflare management calls for this graph require a dedicated API token. Give t
 
 Store the token outside the repository. The ordinary Wrangler OAuth token can deploy Workers and manage Secrets Store values, but it cannot create or deploy AI Gateway Dynamic Routes.
 
-BYOK secret names must follow Cloudflare's `{gateway_id}_{provider_slug}_{alias}` convention. For gateway `default`, this project uses `default_groq_default`, `default_openrouter_default`, and `default_custom-kimi-code_default`, each scoped to `ai_gateway`. Kimi Code is registered as the custom provider `kimi-code` with base URL `https://api.kimi.com/coding/v1`; Dynamic Route nodes refer to it as `custom-kimi-code`. After the provider configurations and route version are deployed, run the compatibility probes against the Dynamic Route before changing KV from `workers-ai-test` to `ai-gateway`.
+BYOK secret names must follow Cloudflare's `{gateway_id}_{provider_slug}_{alias}` convention. For gateway `default`, this project uses aliases under `default_groq_*`, `default_openrouter_*`, and `default_custom-kimi-code_*`, each scoped to `ai_gateway`. Kimi Code is registered as the custom provider `kimi-code` with base URL `https://api.kimi.com/coding/v1`; provider nodes refer to it as `custom-kimi-code`. TokenRouter uses `TOKENROUTER_API_KEY_1` through `TOKENROUTER_API_KEY_4` as Worker secrets and never stores their values in KV or D1.
 
-D1 marks `zhiyuan-free` active, records `free-agent-openai` as its OpenAI route, and seeds the `FREE` plan with request and token limits. KV contains the runtime route configuration. Disabling a user, entitlement, logical model, or route mapping in D1 takes effect on the next request. Removing an existing user's entitlement does not cause it to be automatically recreated; automatic entitlement provisioning applies only when the user is first created.
+D1 marks `zhiyuan-free` active, records `free-chat-openai` and `free-work-openai` as its workload routes, and seeds the `FREE` plan with request and token limits. KV contains the runtime route configuration. Disabling a user, entitlement, logical model, or route mapping in D1 takes effect on the next request. Removing an existing user's entitlement does not cause it to be automatically recreated; automatic entitlement provisioning applies only when the user is first created.
 
 For a staging operator smoke test, store the bearer token in `workers/model-pool/.test-token` with file mode `0600`. The path is ignored by Git. Rotate the staging `MODEL_POOL_TEST_TOKEN` secret whenever this local token is replaced. Production smoke tests use a real desktop access token.
 
@@ -73,4 +90,4 @@ For a staging operator smoke test, store the bearer token in `workers/model-pool
 
 Wrangler does not currently expose AI Gateway or Dynamic Route management commands. Create the Gateway, stored provider credentials, and Dynamic Routes through the Cloudflare dashboard or through the REST API with a dedicated Cloudflare API token that has `AI Gateway - Read` and `AI Gateway - Edit`. Wrangler OAuth tokens are not used as long-lived project credentials.
 
-Cloudflare Dynamic Routes currently run through the OpenAI-compatible `/compat/chat/completions` endpoint. The Worker passes `dynamic/<routeName>` as the upstream model and does not forward Cloudflare's provider/model response headers to clients. Do not mark the Anthropic route mapping active until Cloudflare supports Dynamic Routes on the Anthropic-native endpoint or the architecture explicitly chooses a protocol adapter.
+Cloudflare's Worker binding still cannot select a non-default BYOK alias. Keyed provider nodes therefore call the provider-specific AI Gateway URL with `cf-aig-byok-alias`; Workers AI nodes continue through the binding. Provider identities and quota headers remain server-side and are not forwarded to clients. Do not mark the Anthropic route mapping active until the architecture explicitly chooses and verifies a protocol adapter.

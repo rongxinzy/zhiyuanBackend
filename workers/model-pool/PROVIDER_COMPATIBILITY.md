@@ -6,10 +6,11 @@ This matrix records protocol evidence for admitting a provider into a ZhiYuan lo
 
 | Provider | OpenAI chat | Anthropic Messages | Streaming | Tool calling | Current admission |
 | --- | --- | --- | --- | --- | --- |
-| Groq | Pass | Unsupported by the documented API | Pass | Pass | `free-agent-openai` |
-| OpenRouter | Pass | Pass | Pass for both protocols | Pass for both protocols | `free-agent-openai`; Anthropic-qualified but not activated |
-| Kimi K2.7 Code standard (`kimi-for-coding`) | Pass | Documented; not tested | Pass | Pass | `free-agent-openai` third fallback via `custom-kimi-code`; K3 and HighSpeed are intentionally excluded to conserve quota |
-| Workers AI | Pass | Not supported by Cloudflare `/ai/v1/messages` | Pass | Pass | Final OpenAI fallback |
+| TokenRouter GLM 5.3 Free | Pass through Worker egress | Not tested | Pass | Pass | First Chat/Work node via four Worker-secret aliases; AI Gateway custom-provider response is unusable |
+| Groq | Pass | Unsupported by the documented API | Pass | Pass | Chat/Work keyed fallback through four AI Gateway aliases |
+| OpenRouter MiniMax M3 Free | Pass | Pass | Pass for both protocols | Not admitted for Work | First AI Gateway Chat fallback through six aliases |
+| Kimi K2.7 Code standard (`kimi-for-coding`) | Pass | Documented; not tested | Pass | Pass | Late Chat/Work fallback via `custom-kimi-code`; K3 and HighSpeed are intentionally excluded to conserve quota |
+| Workers AI | Pass | Not supported by Cloudflare `/ai/v1/messages` | Pass | Pass for admitted Work models | Low-cost Chat fallback and tool-capable Work fallback |
 | Agnes | Blocked by origin HTTP 1015 | Not tested | Not tested | Not tested | Excluded |
 
 ## Kimi Code evidence and boundary
@@ -27,6 +28,12 @@ References:
 
 - <https://www.kimi.com/code/docs/en/>
 - <https://developers.cloudflare.com/ai-gateway/configuration/custom-providers/>
+
+## TokenRouter evidence and boundary
+
+Four TokenRouter credentials are configured as independent aliases. Direct local probes were inconsistent: GLM 5.3 Free passed required tool calling on one key, while another key returned quota exhaustion and two requests timed out. This is why the provider is admitted only behind per-key health state and bounded retries.
+
+Cloudflare AI Gateway's `custom-tokenrouter` endpoint reaches the origin and returns TokenRouter request IDs, but returns an empty HTTP 200 HTML response for both BYOK and explicit authorization. The same request through the staging Model Pool Worker returns valid OpenAI JSON; guest Chat, Work tool calling, streaming, logical-model rewriting, and usage smoke tests pass. TokenRouter therefore uses direct Worker egress until its AI Gateway response compatibility changes.
 
 ## OpenRouter Anthropic evidence
 

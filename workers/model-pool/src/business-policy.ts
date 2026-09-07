@@ -42,13 +42,16 @@ export interface ModelAccessSnapshot {
   entitlement_expires_at: string | null;
   route_enabled: number | null;
   openai_route: string | null;
+  chat_openai_route: string | null;
+  work_openai_route: string | null;
 }
 
 export interface ModelAccessPolicy {
   dailyRequestLimit: number | null;
   dailyTokenLimit: number | null;
   monthlyTokenLimit: number | null;
-  openAiRoute: string;
+  chatOpenAiRoute: string;
+  workOpenAiRoute: string;
   userId: string;
 }
 
@@ -86,7 +89,14 @@ export function evaluateModelAccess(
     };
   }
 
-  if (row.model_enabled !== 1 || row.route_enabled !== 1 || !row.openai_route) {
+  const chatOpenAiRoute = row.chat_openai_route ?? row.openai_route;
+  const workOpenAiRoute = row.work_openai_route ?? row.openai_route;
+  if (
+    row.model_enabled !== 1 ||
+    row.route_enabled !== 1 ||
+    !chatOpenAiRoute ||
+    !workOpenAiRoute
+  ) {
     return {
       decision: ModelAccessDecision.Denied,
       code: ModelAccessDenialCode.ModelUnavailable,
@@ -99,7 +109,8 @@ export function evaluateModelAccess(
       dailyRequestLimit: row.daily_request_limit,
       dailyTokenLimit: row.daily_token_limit,
       monthlyTokenLimit: row.monthly_token_limit,
-      openAiRoute: row.openai_route,
+      chatOpenAiRoute,
+      workOpenAiRoute,
       userId,
     },
   };
@@ -155,7 +166,9 @@ export async function resolveModelAccess(
          entitlements.enabled AS entitlement_enabled,
          entitlements.expires_at AS entitlement_expires_at,
          route_mappings.enabled AS route_enabled,
-         route_mappings.openai_route
+         route_mappings.openai_route,
+         route_mappings.chat_openai_route,
+         route_mappings.work_openai_route
        FROM users
        JOIN plans ON plans.id = users.plan_id
        LEFT JOIN logical_models ON logical_models.id = ?2
