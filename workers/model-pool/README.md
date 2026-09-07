@@ -50,7 +50,7 @@ The `mode: direct-test` route remains available only for short-lived provider co
 
 ## Dynamic Route provisioning
 
-The checked-in route graph is `cloudflare/free-agent-openai.route.json`. Its current BYOK fallback order is Groq then OpenRouter; the Worker provides the final Workers AI fallback. Agnes is intentionally excluded while its origin rejects Cloudflare egress with HTTP 1015.
+The checked-in route graph is `cloudflare/free-agent-openai.route.json`. Its current BYOK fallback order is Groq, OpenRouter, then Kimi Code; the Worker provides the final Workers AI fallback. Agnes is intentionally excluded while its origin rejects Cloudflare egress with HTTP 1015.
 
 Protocol admission results and the current Anthropic activation boundary are recorded in `PROVIDER_COMPATIBILITY.md`.
 
@@ -61,7 +61,7 @@ Cloudflare management calls for this graph require a dedicated API token. Give t
 
 Store the token outside the repository. The ordinary Wrangler OAuth token can deploy Workers and manage Secrets Store values, but it cannot create or deploy AI Gateway Dynamic Routes.
 
-BYOK secret names must follow Cloudflare's `{gateway_id}_{provider_slug}_{alias}` convention. For gateway `default`, this project uses `default_groq_default` and `default_openrouter_default`, each scoped to `ai_gateway`. After the provider configurations and route version are deployed, run the compatibility probes against the Dynamic Route before changing KV from `workers-ai-test` to `ai-gateway`.
+BYOK secret names must follow Cloudflare's `{gateway_id}_{provider_slug}_{alias}` convention. For gateway `default`, this project uses `default_groq_default`, `default_openrouter_default`, and `default_custom-kimi-code_default`, each scoped to `ai_gateway`. Kimi Code is registered as the custom provider `kimi-code` with base URL `https://api.kimi.com/coding/v1`; Dynamic Route nodes refer to it as `custom-kimi-code`. After the provider configurations and route version are deployed, run the compatibility probes against the Dynamic Route before changing KV from `workers-ai-test` to `ai-gateway`.
 
 D1 marks `zhiyuan-free` active, records `free-agent-openai` as its OpenAI route, and seeds the `FREE` plan with request and token limits. KV contains the runtime route configuration. Disabling a user, entitlement, logical model, or route mapping in D1 takes effect on the next request. Removing an existing user's entitlement does not cause it to be automatically recreated; automatic entitlement provisioning applies only when the user is first created.
 

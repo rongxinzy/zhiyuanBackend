@@ -33,6 +33,20 @@
       },
       "outputs": {
         "success": { "elementId": "end" },
+        "fallback": { "elementId": "kimi" }
+      }
+    },
+    {
+      "id": "kimi",
+      "type": "model",
+      "properties": {
+        "provider": "custom-kimi-code",
+        "model": "kimi-for-coding",
+        "timeout": 30000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
         "fallback": { "elementId": "end" }
       }
     },

@@ -213,7 +213,9 @@ async function verifyStreaming(baseUrl, token) {
   assert(dataLines.at(-1) === '[DONE]', 'streaming chat did not terminate with [DONE]');
   const events = dataLines.slice(0, -1).map(line => JSON.parse(line));
   assert(events.length > 0, 'streaming chat returned no events');
-  assert(events.every(event => event.model === LogicalModel.Free), 'stream exposed a physical model name');
+  const models = events.flatMap(event => (typeof event.model === 'string' ? [event.model] : []));
+  assert(models.length > 0, 'stream returned no model identity');
+  assert(models.every(model => model === LogicalModel.Free), 'stream exposed a physical model name');
   const usage = events.find(event => event.usage)?.usage;
   assert(Number.isFinite(usage?.prompt_tokens), 'stream has no prompt token usage');
   assert(Number.isFinite(usage?.completion_tokens), 'stream has no completion token usage');
