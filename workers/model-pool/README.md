@@ -50,7 +50,7 @@ The `mode: direct-test` route remains available only for short-lived provider co
 
 ## Dynamic Route provisioning
 
-The checked-in route graph is `cloudflare/free-agent-openai.route.json`. Its current BYOK fallback order is Groq, OpenRouter, then Kimi Code; the Worker provides the final Workers AI fallback. Agnes is intentionally excluded while its origin rejects Cloudflare egress with HTTP 1015.
+The checked-in route graph is `cloudflare/free-agent-openai.route.json`. Its current BYOK fallback order is Groq, OpenRouter, then the standard `kimi-for-coding` model (Kimi K2.7 Code); the Worker provides the final Workers AI fallback. The route intentionally avoids Kimi K3 and Kimi HighSpeed so the membership quota lasts longer. Agnes is intentionally excluded while its origin rejects Cloudflare egress with HTTP 1015.
 
 Protocol admission results and the current Anthropic activation boundary are recorded in `PROVIDER_COMPATIBILITY.md`.
 

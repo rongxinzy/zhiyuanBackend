@@ -8,13 +8,13 @@ This matrix records protocol evidence for admitting a provider into a ZhiYuan lo
 | --- | --- | --- | --- | --- | --- |
 | Groq | Pass | Unsupported by the documented API | Pass | Pass | `free-agent-openai` |
 | OpenRouter | Pass | Pass | Pass for both protocols | Pass for both protocols | `free-agent-openai`; Anthropic-qualified but not activated |
-| Kimi Code | Pass | Documented; not tested | Pass | Pass | `free-agent-openai` third fallback via `custom-kimi-code` |
+| Kimi K2.7 Code standard (`kimi-for-coding`) | Pass | Documented; not tested | Pass | Pass | `free-agent-openai` third fallback via `custom-kimi-code`; K3 and HighSpeed are intentionally excluded to conserve quota |
 | Workers AI | Pass | Not supported by Cloudflare `/ai/v1/messages` | Pass | Pass | Final OpenAI fallback |
 | Agnes | Blocked by origin HTTP 1015 | Not tested | Not tested | Not tested | Excluded |
 
 ## Kimi Code evidence and boundary
 
-The configured `sk-kimi-` credential was tested with the OpenAI-compatible `kimi-for-coding` model:
+The configured `sk-kimi-` credential was tested with the OpenAI-compatible standard `kimi-for-coding` model (Kimi K2.7 Code). This is the baseline-consumption K2.7 option; the HighSpeed variant consumes about three times the quota, and K3 is intentionally not configured.
 
 - Direct non-streaming inference against `https://api.kimi.com/coding/v1/chat/completions` returned a valid completion and token usage.
 - Cloudflare AI Gateway custom provider `custom-kimi-code` passed non-streaming inference, required tool calling, and streaming through a dedicated staging Dynamic Route.
