@@ -7,10 +7,7 @@ import {
   parseResetHeader,
   shouldTryNextProvider,
 } from '../src/provider-observation.ts';
-import {
-  calculateCandidateScore,
-  calculateCapacityFactor,
-} from '../src/provider-scoring.ts';
+import { calculateCandidateScore, calculateCapacityFactor } from '../src/provider-scoring.ts';
 
 test('parses provider quota headers for dynamic weighting', () => {
   const now = Date.parse('2026-09-07T00:00:00Z');
@@ -42,11 +39,11 @@ test('accepts HTTP dates and rejects malformed quota values', () => {
   assert.equal(parseResetHeader(headers, 'x-reset', now), now + 300_000);
 });
 
-test('retries authentication, quota, throttling, and upstream failures only', () => {
-  for (const status of [401, 402, 403, 408, 429, 500, 503]) {
+test('retries model, authentication, quota, throttling and upstream failures', () => {
+  for (const status of [401, 402, 403, 404, 408, 429, 500, 503]) {
     assert.equal(shouldTryNextProvider(status), true);
   }
-  for (const status of [400, 404, 409, 422]) {
+  for (const status of [400, 409, 422]) {
     assert.equal(shouldTryNextProvider(status), false);
   }
 });

@@ -1,4 +1,5 @@
 import { ModelPoolWorkload } from './routing.ts';
+import { validateCompletion } from './completion-validation.ts';
 
 export const UpstreamTiming = {
   ChatSelectionMs: 30_000,
@@ -8,6 +9,7 @@ export const UpstreamTiming = {
   IdleMs: 30_000,
   TotalMs: 150_000,
   MaximumPreambleBytes: 65_536,
+  MaximumCompletionBytes: 2 * 1024 * 1024,
 } as const;
 
 export class SelectionBudgetExceededError extends Error {
@@ -25,7 +27,11 @@ export class UpstreamTimeoutError extends Error {
 export class SelectionBudget {
   readonly deadline: number;
   readonly attemptMs: number;
-  constructor(workload: ModelPoolWorkload, now = Date.now()) {
+  constructor(
+    workload: ModelPoolWorkload,
+    now = Date.now(),
+    limits?: { deadline: number; attemptMs: number },
+  ) {
     this.deadline =
       now +
       (workload === ModelPoolWorkload.Chat
@@ -35,6 +41,10 @@ export class SelectionBudget {
       workload === ModelPoolWorkload.Chat
         ? UpstreamTiming.ChatAttemptMs
         : UpstreamTiming.WorkAttemptMs;
+    if (limits) {
+      this.deadline = Math.min(this.deadline, limits.deadline);
+      this.attemptMs = limits.attemptMs;
+    }
   }
   remaining(configuredMs = this.attemptMs): number {
     const remaining = Math.min(configuredMs, this.attemptMs, this.deadline - Date.now());
@@ -178,6 +188,28 @@ export async function timedUpstream(
       throw new Error('Invalid upstream response type');
     }
     reader = response.body.getReader();
+    if (!expectStream) {
+      let text = '';
+      let size = 0;
+      const decoder = new TextDecoder();
+      while (true) {
+        const chunk = await wait(reader.read());
+        if (chunk.done) break;
+        size += chunk.value.byteLength;
+        if (size > UpstreamTiming.MaximumCompletionBytes)
+          throw new Error('Upstream completion exceeds limit');
+        text += decoder.decode(chunk.value, { stream: true });
+      }
+      text += decoder.decode();
+      validateCompletion(JSON.parse(text));
+      controller.signal.throwIfAborted();
+      cleanup();
+      reader.releaseLock();
+      const headers = new Headers(response.headers);
+      headers.delete('content-length');
+      headers.delete('content-encoding');
+      return new Response(text, { status: response.status, headers });
+    }
     const prefix: Uint8Array[] = [];
     let size = 0;
     let text = '';

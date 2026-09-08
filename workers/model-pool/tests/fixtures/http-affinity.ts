@@ -20,6 +20,7 @@ export async function exerciseHttpAffinity(env: Env, ctx: ExecutionContext) {
   });
   let hold = true;
   let reject = false;
+  let primaryResponse = () => new Response(null, { status: 503 });
   const primary = '@cf/test/primary';
   const fallback = '@cf/test/fallback';
   const nodes = [primary, fallback].map((model, index) => ({
@@ -68,7 +69,7 @@ export async function exerciseHttpAffinity(env: Env, ctx: ExecutionContext) {
       run: async (model: string) => {
         calls.push(model);
         if (reject) return Response.json({ error: 'rejected' }, { status: 400 });
-        if (model === primary) return new Response(null, { status: 503 });
+        if (model === primary) return primaryResponse();
         if (hold) {
           hold = false;
           enter();
@@ -76,19 +77,22 @@ export async function exerciseHttpAffinity(env: Env, ctx: ExecutionContext) {
         }
         return Response.json({
           model,
-          choices: [],
+          choices: [{ message: { role: 'assistant', content: 'hello' }, finish_reason: 'stop' }],
           usage: { prompt_tokens: 1, completion_tokens: 1 },
         });
       },
     },
   } as unknown as Env;
-  const request = (mode: ModelPoolWorkload = ModelPoolWorkload.Chat) =>
+  const request = (
+    mode: ModelPoolWorkload = ModelPoolWorkload.Chat,
+    conversationId = 'session-1',
+  ) =>
     new Request('https://test/v1/chat/completions', {
       method: 'POST',
       headers: {
         authorization: 'Bearer test',
         'content-type': 'application/json',
-        [ModelPoolHeader.ConversationId]: 'session-1',
+        [ModelPoolHeader.ConversationId]: conversationId,
         [ModelPoolHeader.Workload]: mode,
       },
       body: JSON.stringify({
@@ -118,6 +122,27 @@ export async function exerciseHttpAffinity(env: Env, ctx: ExecutionContext) {
   const key = JSON.stringify(['zhiyuan-free', ModelPoolWorkload.Chat, 'session-1']);
   const stored = await user.beginSession(key);
   if (stored) await user.releaseSession(key, stored.token);
+  reject = false;
+  const recovery: Array<{ status: number; calls: string[]; content: string }> = [];
+  for (const respond of [
+    () => Response.json({ error: 'model unavailable' }, { status: 404 }),
+    () => Response.json({ choices: [] }),
+    () => new Response('{', { headers: { 'content-type': 'application/json' } }),
+  ]) {
+    primaryResponse = respond;
+    const start = calls.length;
+    const response = await worker.fetch(
+      request(ModelPoolWorkload.Chat, crypto.randomUUID()),
+      testEnv,
+      ctx,
+    );
+    const value = await response.json<{ choices: Array<{ message: { content: string } }> }>();
+    recovery.push({
+      status: response.status,
+      calls: calls.slice(start),
+      content: value.choices[0].message.content,
+    });
+  }
   return {
     first: first.status,
     second: second.status,
@@ -128,5 +153,6 @@ export async function exerciseHttpAffinity(env: Env, ctx: ExecutionContext) {
     workCalls,
     rejected: rejected.status,
     storedModel: stored?.binding?.model,
+    recovery,
   };
 }

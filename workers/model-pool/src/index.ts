@@ -10,6 +10,7 @@ import {
   resolveModelAccess,
 } from './business-policy.ts';
 import { ProviderPool } from './provider-pool.ts';
+import { selectProvider } from './provider-selection.ts';
 import { observationFromResponse, shouldTryNextProvider } from './provider-observation.ts';
 import { rewriteUpstreamResponse } from './response-rewrite.ts';
 import {
@@ -405,6 +406,11 @@ async function runGatewayProvider(
       };
     }
 
+    if (response.status === 404) {
+      await pool.release(lease.leaseId);
+      await response.body?.cancel();
+      return null;
+    }
     await pool.report(lease, observation);
     if (!shouldTryNextProvider(response.status)) return { response };
     console.warn(`[ModelPool] provider ${node.id} returned HTTP ${response.status}`);
@@ -489,6 +495,11 @@ async function runDirectProvider(
       };
     }
 
+    if (response.status === 404) {
+      await pool.release(lease.leaseId);
+      await response.body?.cancel();
+      return null;
+    }
     await pool.report(lease, observation);
     if (!shouldTryNextProvider(response.status)) return { response };
     console.warn(`[ModelPool] provider ${node.id} returned HTTP ${response.status}`);
@@ -507,55 +518,58 @@ async function runProviderPool(
   binding: SessionBinding | null,
 ): Promise<RoutedResponse> {
   const workloadRoute = route.routes[workload];
-  const budget = new SelectionBudget(workload);
-  for (const node of orderSessionNodes(route.gatewayId, workloadRoute.nodes, binding)) {
-    budget.remaining();
-    request.signal.throwIfAborted();
-    if (node.kind === ProviderNodeKind.WorkersAi) {
-      try {
-        const response = await timedUpstream(
-          signal => runWorkersAi(body, route.gatewayId, node.model, request, env, signal),
-          request.signal,
-          budget.remaining(),
-          body.stream === true,
-        );
-        if (response.ok)
-          return { response, sessionBinding: bindSession(route.gatewayId, node, null) };
-        if (!shouldTryNextProvider(response.status)) return { response };
-        console.warn(`[ModelPool] Workers AI node ${node.id} returned HTTP ${response.status}`);
-        await response.body?.cancel();
-      } catch (error) {
-        if (request.signal.aborted) throw error;
-        console.warn(`[ModelPool] Workers AI node ${node.id} request failed:`, error);
-      }
-      continue;
-    }
-
-    const result =
-      node.kind === ProviderNodeKind.Direct
-        ? await runDirectProvider(
-            body,
-            route,
-            node,
-            request,
-            env,
-            `${workload}:${conversationId}`,
-            binding,
-            budget,
-          )
-        : await runGatewayProvider(
-            body,
-            route,
-            node,
-            request,
-            env,
-            `${workload}:${conversationId}`,
-            binding,
-            budget,
+  return selectProvider(
+    orderSessionNodes(route.gatewayId, workloadRoute.nodes, binding),
+    workload,
+    request.signal,
+    async (node, budget) => {
+      budget.remaining();
+      request.signal.throwIfAborted();
+      if (node.kind === ProviderNodeKind.WorkersAi) {
+        try {
+          const response = await timedUpstream(
+            signal => runWorkersAi(body, route.gatewayId, node.model, request, env, signal),
+            request.signal,
+            budget.remaining(),
+            body.stream === true,
           );
-    if (result) return result;
-  }
-  throw new Error(`No ${workload} provider is currently available`);
+          if (response.ok)
+            return { response, sessionBinding: bindSession(route.gatewayId, node, null) };
+          if (!shouldTryNextProvider(response.status)) return { response };
+          console.warn(`[ModelPool] Workers AI node ${node.id} returned HTTP ${response.status}`);
+          await response.body?.cancel();
+        } catch (error) {
+          if (request.signal.aborted) throw error;
+          console.warn(`[ModelPool] Workers AI node ${node.id} request failed:`, error);
+        }
+        return null;
+      }
+
+      const result =
+        node.kind === ProviderNodeKind.Direct
+          ? await runDirectProvider(
+              body,
+              route,
+              node,
+              request,
+              env,
+              `${workload}:${conversationId}`,
+              binding,
+              budget,
+            )
+          : await runGatewayProvider(
+              body,
+              route,
+              node,
+              request,
+              env,
+              `${workload}:${conversationId}`,
+              binding,
+              budget,
+            );
+      return result;
+    },
+  );
 }
 
 async function runRoute(

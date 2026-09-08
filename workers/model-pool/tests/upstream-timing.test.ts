@@ -120,3 +120,90 @@ test('selection budget is shared across attempts and cannot restart after expiry
     /deadline exceeded/,
   );
 });
+
+test('non-stream selection validates a complete bounded answer, not the first byte', async () => {
+  const response = (value: unknown) => Response.json(value);
+  for (const message of [
+    { content: 'hello' },
+    { content: null, refusal: 'Cannot help with that' },
+    {
+      content: null,
+      tool_calls: [{ id: 'call-1', function: { name: 'search', arguments: '{}' } }],
+    },
+  ]) {
+    const value = { choices: [{ message }] };
+    const result = await timedUpstream(async () => response(value), signal(), 1000, false);
+    assert.deepEqual(await result.json(), value);
+  }
+  for (const value of [
+    {},
+    { error: 'bad' },
+    { choices: [] },
+    {
+      choices: [
+        { message: { content: '', reasoning_content: 'thinking' }, finish_reason: 'length' },
+      ],
+    },
+    { choices: [{ message: { tool_calls: [{}] } }] },
+  ]) {
+    await assert.rejects(
+      timedUpstream(async () => response(value), signal(), 1000, false),
+      /upstream/i,
+    );
+  }
+  await assert.rejects(
+    timedUpstream(
+      async () =>
+        new Response('{', {
+          headers: { 'content-type': 'application/json' },
+        }),
+      signal(),
+      1000,
+      false,
+    ),
+    SyntaxError,
+  );
+  await assert.rejects(
+    timedUpstream(
+      async () =>
+        response({
+          choices: [
+            {
+              message: {
+                content: 'x'.repeat(UpstreamTiming.MaximumCompletionBytes),
+              },
+            },
+          ],
+        }),
+      signal(),
+      1000,
+      false,
+    ),
+    /exceeds limit/,
+  );
+});
+
+test('a stalled JSON body is canceled inside the selection deadline', async () => {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(new TextEncoder().encode('{"choices":'));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  await assert.rejects(
+    timedUpstream(
+      async () =>
+        new Response(body, {
+          headers: { 'content-type': 'application/json' },
+        }),
+      signal(),
+      15,
+      false,
+    ),
+    /timed out/,
+  );
+  assert.equal(cancelled, true);
+});
