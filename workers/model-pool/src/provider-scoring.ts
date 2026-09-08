@@ -13,13 +13,16 @@ function routingHash(value: string): number {
     hash ^= value.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
   }
+  // Avalanche the full hash: adjacent alias suffixes otherwise produce correlated ranks.
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35);
+  hash ^= hash >>> 16;
   return hash >>> 0;
 }
 
-export function calculateCapacityFactor(
-  scope: ProviderCapacity | undefined,
-  now: number,
-): number {
+export function calculateCapacityFactor(scope: ProviderCapacity | undefined, now: number): number {
   if (!scope) return 1;
   const requestReset = scope.reset_requests_at ?? 0;
   const tokenReset = scope.reset_tokens_at ?? 0;
@@ -45,6 +48,6 @@ export function calculateCandidateScore(
   capacity: number,
   inflight: number,
 ): number {
-  const affinity = (routingHash(`${affinityKey}:${candidateId}`) + 1) / 0x1_0000_0000;
+  const affinity = (routingHash(JSON.stringify([affinityKey, candidateId])) + 0.5) / 0x1_0000_0000;
   return (weight * capacity) / (-Math.log(affinity) * (inflight + 1));
 }
