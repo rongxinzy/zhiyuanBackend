@@ -1,10 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 
 import type { ProviderObservation } from './provider-observation.ts';
-import {
-  calculateCandidateScore,
-  calculateCapacityFactor,
-} from './provider-scoring.ts';
+import { calculateCandidateScore, calculateCapacityFactor } from './provider-scoring.ts';
 import type { KeyedProviderNode } from './routing.ts';
 
 export const ProviderHealthState = {
@@ -86,6 +83,7 @@ export class ProviderPool extends DurableObject<Env> {
     affinityKey: string,
     excludedCandidateIds: string[],
     now = Date.now(),
+    preferredAlias: string | null = null,
   ): Promise<ProviderLease | null> {
     this.ctx.storage.sql.exec('DELETE FROM leases WHERE expires_at <= ?', now);
     const healthRows = this.ctx.storage.sql
@@ -118,7 +116,8 @@ export class ProviderPool extends DurableObject<Env> {
         scope &&
         ((scope.remaining_requests === 0 && (scope.reset_requests_at ?? now + 1) > now) ||
           (scope.remaining_tokens === 0 && (scope.reset_tokens_at ?? now + 1) > now))
-      ) return [];
+      )
+        return [];
       const active = inflight.get(candidateId) ?? 0;
       const score = calculateCandidateScore(
         affinityKey,
@@ -130,7 +129,8 @@ export class ProviderPool extends DurableObject<Env> {
       return [{ alias, candidateId, score }];
     });
     ranked.sort((left, right) => right.score - left.score);
-    const selected = ranked[0];
+    // Affinity only bypasses load scoring, never health or quota eligibility.
+    const selected = ranked.find(candidate => candidate.alias.id === preferredAlias) ?? ranked[0];
     if (!selected) return null;
 
     const leaseId = crypto.randomUUID();
@@ -148,11 +148,7 @@ export class ProviderPool extends DurableObject<Env> {
     };
   }
 
-  observe(
-    lease: ProviderLease,
-    observation: ProviderObservation,
-    now = Date.now(),
-  ): void {
+  observe(lease: ProviderLease, observation: ProviderObservation, now = Date.now()): void {
     const existing = this.ctx.storage.sql
       .exec<CandidateHealthRow>(
         'SELECT * FROM candidate_health WHERE candidate_id = ?',
@@ -180,7 +176,11 @@ export class ProviderPool extends DurableObject<Env> {
               observation.resetTokensAt ?? 0,
               now + DEFAULT_EXHAUSTED_COOLDOWN_MS,
             );
-    } else if (observation.status === 429 || observation.status === 408 || observation.status >= 500) {
+    } else if (
+      observation.status === 429 ||
+      observation.status === 408 ||
+      observation.status >= 500
+    ) {
       state = ProviderHealthState.Cooldown;
       failures = previousFailures + 1;
       const exponential = Math.min(MAX_TRANSIENT_COOLDOWN_MS, 5_000 * 2 ** Math.min(failures, 6));
@@ -234,11 +234,7 @@ export class ProviderPool extends DurableObject<Env> {
     this.ctx.storage.sql.exec('DELETE FROM leases WHERE lease_id = ?', leaseId);
   }
 
-  report(
-    lease: ProviderLease,
-    observation: ProviderObservation,
-    now = Date.now(),
-  ): void {
+  report(lease: ProviderLease, observation: ProviderObservation, now = Date.now()): void {
     this.observe(lease, observation, now);
     this.release(lease.leaseId);
   }

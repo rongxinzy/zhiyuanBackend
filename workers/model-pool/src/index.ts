@@ -9,13 +9,8 @@ import {
   type ModelAccessPolicy,
   resolveModelAccess,
 } from './business-policy.ts';
-import {
-  ProviderPool,
-} from './provider-pool.ts';
-import {
-  observationFromResponse,
-  shouldTryNextProvider,
-} from './provider-observation.ts';
+import { ProviderPool } from './provider-pool.ts';
+import { observationFromResponse, shouldTryNextProvider } from './provider-observation.ts';
 import { rewriteUpstreamResponse } from './response-rewrite.ts';
 import {
   isRouteConfig,
@@ -32,6 +27,13 @@ import {
   type RouteConfig,
 } from './routing.ts';
 import type { TokenUsage } from './usage.ts';
+import {
+  bindSession,
+  orderSessionNodes,
+  preferredAlias,
+  SessionAffinityStore,
+  type SessionBinding,
+} from './session-affinity.ts';
 
 const ApiPath = {
   ChatCompletions: '/v1/chat/completions',
@@ -84,6 +86,23 @@ interface RequestQuotaResult {
 }
 
 export class UserQuota extends DurableObject<Env> {
+  private readonly sessions: SessionAffinityStore;
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.sessions = new SessionAffinityStore(ctx.storage.sql);
+  }
+
+  beginSession(key: string) {
+    return this.sessions.begin(key);
+  }
+  finishSession(key: string, token: string, binding: SessionBinding) {
+    return this.sessions.finish(key, token, binding);
+  }
+  releaseSession(key: string, token: string) {
+    this.sessions.release(key, token);
+  }
+
   async reserveRequest(limits: QuotaLimits, date: string): Promise<RequestQuotaResult> {
     const month = date.slice(0, 7);
     const requestKey = `requests:${date}`;
@@ -195,9 +214,13 @@ function secretsMatch(actual: string | null, expected: string): boolean {
   return difference === 0;
 }
 
-async function authenticateRequest(request: Request, env: Env): Promise<AuthenticatedUser | Response> {
+async function authenticateRequest(
+  request: Request,
+  env: Env,
+): Promise<AuthenticatedUser | Response> {
   const token = bearerToken(request);
-  if (!token) return errorResponse('unauthorized', 'A valid ZhiYuan account session is required.', 401);
+  if (!token)
+    return errorResponse('unauthorized', 'A valid ZhiYuan account session is required.', 401);
 
   if (env.ENVIRONMENT === 'staging' && secretsMatch(token, env.MODEL_POOL_TEST_TOKEN)) {
     return { userId: 'staging-test-user', kind: ModelPoolIdentityKind.User };
@@ -211,7 +234,11 @@ async function authenticateRequest(request: Request, env: Env): Promise<Authenti
       : errorResponse('unauthorized', 'A valid ZhiYuan account session is required.', 401);
   } catch (error) {
     console.error('[ModelPool] account authentication failed:', error);
-    return errorResponse('authentication_unavailable', 'Account authentication is temporarily unavailable.', 503);
+    return errorResponse(
+      'authentication_unavailable',
+      'Account authentication is temporarily unavailable.',
+      503,
+    );
   }
 }
 
@@ -281,6 +308,7 @@ async function runWorkersAi(
 }
 
 interface RoutedResponse {
+  sessionBinding?: SessionBinding;
   rejectLease?: () => Promise<void>;
   releaseLease?: () => Promise<void>;
   response: Response;
@@ -306,6 +334,7 @@ async function runGatewayProvider(
   request: Request,
   env: Env,
   affinityKey: string,
+  binding: SessionBinding | null,
 ): Promise<RoutedResponse | null> {
   const poolId = env.PROVIDER_POOL.idFromName(`${route.gatewayId}:${node.poolId}`);
   const pool = env.PROVIDER_POOL.get(poolId);
@@ -314,7 +343,14 @@ async function runGatewayProvider(
   const upstreamUrl = new URL('chat/completions', `${gatewayUrl.replace(/\/$/, '')}/`);
 
   for (let attempt = 0; attempt < node.maxAliasAttempts; attempt += 1) {
-    const lease = await pool.acquire(node, affinityKey, excludedCandidateIds);
+    request.signal.throwIfAborted();
+    const lease = await pool.acquire(
+      node,
+      affinityKey,
+      excludedCandidateIds,
+      Date.now(),
+      preferredAlias(route.gatewayId, node, binding),
+    );
     if (!lease) return null;
     excludedCandidateIds.push(lease.candidateId);
 
@@ -333,6 +369,10 @@ async function runGatewayProvider(
         signal: AbortSignal.any([request.signal, AbortSignal.timeout(node.timeoutMs)]),
       });
     } catch (error) {
+      if (request.signal.aborted) {
+        await pool.release(lease.leaseId);
+        throw error;
+      }
       await pool.report(lease, failedProviderObservation());
       console.warn(`[ModelPool] provider ${node.id} request attempt failed:`, error);
       continue;
@@ -343,6 +383,7 @@ async function runGatewayProvider(
       await pool.observe(lease, observation);
       return {
         response,
+        sessionBinding: bindSession(route.gatewayId, node, lease.alias),
         rejectLease: () => pool.report(lease, failedProviderObservation()),
         releaseLease: () => pool.release(lease.leaseId),
       };
@@ -363,6 +404,7 @@ async function runDirectProvider(
   request: Request,
   env: Env,
   affinityKey: string,
+  binding: SessionBinding | null,
 ): Promise<RoutedResponse | null> {
   const poolId = env.PROVIDER_POOL.idFromName(`${route.gatewayId}:${node.poolId}`);
   const pool = env.PROVIDER_POOL.get(poolId);
@@ -370,13 +412,18 @@ async function runDirectProvider(
   const upstreamUrl = new URL('chat/completions', `${node.baseUrl.replace(/\/$/, '')}/`);
 
   for (let attempt = 0; attempt < node.maxAliasAttempts; attempt += 1) {
-    const lease = await pool.acquire(node, affinityKey, excludedCandidateIds);
+    request.signal.throwIfAborted();
+    const lease = await pool.acquire(
+      node,
+      affinityKey,
+      excludedCandidateIds,
+      Date.now(),
+      preferredAlias(route.gatewayId, node, binding),
+    );
     if (!lease) return null;
     excludedCandidateIds.push(lease.candidateId);
     const alias = node.aliases.find(candidate => candidate.id === lease.alias);
-    const secret = alias
-      ? (env as unknown as Record<string, unknown>)[alias.secretBinding]
-      : null;
+    const secret = alias ? (env as unknown as Record<string, unknown>)[alias.secretBinding] : null;
     if (typeof secret !== 'string' || !secret) {
       await pool.report(lease, { ...failedProviderObservation(), status: 401 });
       console.error(`[ModelPool] provider ${node.id} secret binding is unavailable`);
@@ -397,6 +444,10 @@ async function runDirectProvider(
         signal: AbortSignal.any([request.signal, AbortSignal.timeout(node.timeoutMs)]),
       });
     } catch (error) {
+      if (request.signal.aborted) {
+        await pool.release(lease.leaseId);
+        throw error;
+      }
       await pool.report(lease, failedProviderObservation());
       console.warn(`[ModelPool] provider ${node.id} request attempt failed:`, error);
       continue;
@@ -407,6 +458,7 @@ async function runDirectProvider(
       await pool.observe(lease, observation);
       return {
         response,
+        sessionBinding: bindSession(route.gatewayId, node, lease.alias),
         rejectLease: () => pool.report(lease, failedProviderObservation()),
         releaseLease: () => pool.release(lease.leaseId),
       };
@@ -427,16 +479,21 @@ async function runProviderPool(
   env: Env,
   workload: ModelPoolWorkload,
   conversationId: string,
+  binding: SessionBinding | null,
 ): Promise<RoutedResponse> {
   const workloadRoute = route.routes[workload];
-  for (const node of workloadRoute.nodes) {
+  for (const node of orderSessionNodes(route.gatewayId, workloadRoute.nodes, binding)) {
+    request.signal.throwIfAborted();
     if (node.kind === ProviderNodeKind.WorkersAi) {
       try {
         const response = await runWorkersAi(body, route.gatewayId, node.model, request, env);
-        if (response.ok || !shouldTryNextProvider(response.status)) return { response };
+        if (response.ok)
+          return { response, sessionBinding: bindSession(route.gatewayId, node, null) };
+        if (!shouldTryNextProvider(response.status)) return { response };
         console.warn(`[ModelPool] Workers AI node ${node.id} returned HTTP ${response.status}`);
         await response.body?.cancel();
       } catch (error) {
+        if (request.signal.aborted) throw error;
         console.warn(`[ModelPool] Workers AI node ${node.id} request failed:`, error);
       }
       continue;
@@ -451,6 +508,7 @@ async function runProviderPool(
             request,
             env,
             `${workload}:${conversationId}`,
+            binding,
           )
         : await runGatewayProvider(
             body,
@@ -459,6 +517,7 @@ async function runProviderPool(
             request,
             env,
             `${workload}:${conversationId}`,
+            binding,
           );
     if (result) return result;
   }
@@ -472,9 +531,10 @@ async function runRoute(
   env: Env,
   workload: ModelPoolWorkload,
   conversationId: string,
+  binding: SessionBinding | null,
 ): Promise<RoutedResponse> {
   if (route.mode === RouteMode.ProviderPool) {
-    return runProviderPool(body, route, request, env, workload, conversationId);
+    return runProviderPool(body, route, request, env, workload, conversationId, binding);
   }
 
   if (route.mode === RouteMode.AiGateway) {
@@ -520,18 +580,17 @@ async function loadAccessPolicy(
   identityKind: ModelPoolIdentityKind,
 ): Promise<ModelAccessPolicy | Response> {
   try {
-    const access = await resolveModelAccess(
-      env.DB,
-      userId,
-      LogicalModel.Free,
-      identityKind,
-    );
+    const access = await resolveModelAccess(env.DB, userId, LogicalModel.Free, identityKind);
     return access.decision === ModelAccessDecision.Allowed
       ? access.policy
       : modelAccessError(access.code);
   } catch (error) {
     console.error('[ModelPool] user policy lookup failed:', error);
-    return errorResponse('policy_unavailable', 'Model access policy is temporarily unavailable.', 503);
+    return errorResponse(
+      'policy_unavailable',
+      'Model access policy is temporarily unavailable.',
+      503,
+    );
   }
 }
 
@@ -591,7 +650,8 @@ async function proxyChatCompletions(
   let body: Record<string, unknown>;
   try {
     const value = await request.json();
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid body');
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      throw new Error('invalid body');
     body = value as Record<string, unknown>;
   } catch {
     return errorResponse('invalid_request', 'The request body must be a JSON object.', 400);
@@ -610,108 +670,172 @@ async function proxyChatCompletions(
 
   const route = await loadFreeRoute(env);
   if (!route) {
-    return errorResponse('model_unavailable', 'The requested logical model has no active route.', 503);
+    return errorResponse(
+      'model_unavailable',
+      'The requested logical model has no active route.',
+      503,
+    );
   }
   const workload = resolveRequestWorkload(request, body);
   const conversationId = resolveConversationId(request);
   const expectedRoute =
     workload === ModelPoolWorkload.Work ? policy.workOpenAiRoute : policy.chatOpenAiRoute;
   const actualRoute =
-    route.mode === RouteMode.ProviderPool ? route.routes[workload].name :
-      route.mode === RouteMode.AiGateway ? route.routeName : expectedRoute;
+    route.mode === RouteMode.ProviderPool
+      ? route.routes[workload].name
+      : route.mode === RouteMode.AiGateway
+        ? route.routeName
+        : expectedRoute;
   if (env.ENVIRONMENT === 'production' && actualRoute !== expectedRoute) {
     console.error('[ModelPool] D1 and KV route mappings do not match');
-    return errorResponse('model_unavailable', 'The requested logical model has no active route.', 503);
+    return errorResponse(
+      'model_unavailable',
+      'The requested logical model has no active route.',
+      503,
+    );
   }
 
   const quotaId = env.USER_QUOTA.idFromName(authentication.userId);
   const quotaStub = env.USER_QUOTA.get(quotaId);
-  const date = usageDate();
-  const quota = await quotaStub.reserveRequest(
-    {
-      dailyRequests: policy.dailyRequestLimit,
-      dailyTokens: policy.dailyTokenLimit,
-      monthlyTokens: policy.monthlyTokenLimit,
-    },
-    date,
-  );
-  if (!quota.allowed) {
-    return errorResponse('quota_exceeded', 'The free model quota has been exhausted.', 429);
+  const sessionKey = JSON.stringify([LogicalModel.Free, workload, conversationId]);
+  const selection =
+    route.mode === RouteMode.ProviderPool ? await quotaStub.beginSession(sessionKey) : null;
+  if (route.mode === RouteMode.ProviderPool && !selection) {
+    const response = errorResponse('session_busy', 'Session routing is busy. Retry shortly.', 503);
+    response.headers.set('retry-after', '2');
+    return response;
   }
-  ctx.waitUntil(recordRequestUsage(env, policy, date));
-
-  const routeMaxOutputTokens =
-    route.mode === RouteMode.ProviderPool ? route.routes[workload].maxOutputTokens : 32_768;
-  if (quota.remainingTokens !== null) {
-    const configuredMaxTokens =
-      typeof body.max_tokens === 'number' && Number.isSafeInteger(body.max_tokens)
-        ? body.max_tokens
-        : routeMaxOutputTokens;
-    body.max_tokens = Math.max(
-      1,
-      Math.min(configuredMaxTokens, quota.remainingTokens, routeMaxOutputTokens),
-    );
-  } else {
-    const configuredMaxTokens =
-      typeof body.max_tokens === 'number' && Number.isSafeInteger(body.max_tokens)
-        ? body.max_tokens
-        : routeMaxOutputTokens;
-    body.max_tokens = Math.max(1, Math.min(configuredMaxTokens, routeMaxOutputTokens));
-  }
-
-  if (body.stream === true) {
-    body.stream_options = { include_usage: true };
-  }
-
-  let routedResponse: RoutedResponse;
   try {
-    routedResponse = await runRoute(body, route, request, env, workload, conversationId);
-  } catch (error) {
-    console.error('[ModelPool] upstream inference failed:', error);
-    return errorResponse('upstream_error', 'The model service is temporarily unavailable.', 502);
-  }
-  const upstreamResponse = routedResponse.response;
-
-  const headers = new Headers();
-  headers.set('cache-control', 'no-store');
-  headers.set('content-type', upstreamResponse.headers.get('content-type') ?? 'application/json');
-  if (quota.remainingRequests !== null) {
-    headers.set('x-zhiyuan-quota-remaining', String(quota.remainingRequests));
-  }
-  if (quota.remainingTokens !== null) {
-    headers.set('x-zhiyuan-token-quota-remaining', String(quota.remainingTokens));
-  }
-
-  let resolveUsage: (usage: TokenUsage) => void = () => undefined;
-  const usage = new Promise<TokenUsage>(resolve => {
-    resolveUsage = resolve;
-  });
-  let responseBody: BodyInit | null;
-  try {
-    responseBody = await rewriteUpstreamResponse(
-      upstreamResponse,
-      LogicalModel.Free,
-      resolveUsage,
+    const date = usageDate();
+    const quota = await quotaStub.reserveRequest(
+      {
+        dailyRequests: policy.dailyRequestLimit,
+        dailyTokens: policy.dailyTokenLimit,
+        monthlyTokens: policy.monthlyTokenLimit,
+      },
+      date,
     );
-  } catch (error) {
-    await (routedResponse.rejectLease?.() ?? routedResponse.releaseLease?.());
-    console.error('[ModelPool] upstream response processing failed:', error);
-    return errorResponse('upstream_error', 'The model service returned an invalid response.', 502);
-  }
-  ctx.waitUntil(
-    usage.then(async value => {
+    if (!quota.allowed) {
+      return errorResponse('quota_exceeded', 'The free model quota has been exhausted.', 429);
+    }
+    ctx.waitUntil(recordRequestUsage(env, policy, date));
+
+    const routeMaxOutputTokens =
+      route.mode === RouteMode.ProviderPool ? route.routes[workload].maxOutputTokens : 32_768;
+    if (quota.remainingTokens !== null) {
+      const configuredMaxTokens =
+        typeof body.max_tokens === 'number' && Number.isSafeInteger(body.max_tokens)
+          ? body.max_tokens
+          : routeMaxOutputTokens;
+      body.max_tokens = Math.max(
+        1,
+        Math.min(configuredMaxTokens, quota.remainingTokens, routeMaxOutputTokens),
+      );
+    } else {
+      const configuredMaxTokens =
+        typeof body.max_tokens === 'number' && Number.isSafeInteger(body.max_tokens)
+          ? body.max_tokens
+          : routeMaxOutputTokens;
+      body.max_tokens = Math.max(1, Math.min(configuredMaxTokens, routeMaxOutputTokens));
+    }
+
+    if (body.stream === true) {
+      body.stream_options = { include_usage: true };
+    }
+
+    let routedResponse: RoutedResponse;
+    try {
+      routedResponse = await runRoute(
+        body,
+        route,
+        request,
+        env,
+        workload,
+        JSON.stringify([authentication.userId, conversationId]),
+        selection?.binding ?? null,
+      );
+    } catch (error) {
+      console.error('[ModelPool] upstream inference failed:', error);
+      return errorResponse('upstream_error', 'The model service is temporarily unavailable.', 502);
+    }
+    const upstreamResponse = routedResponse.response;
+
+    const headers = new Headers();
+    headers.set('cache-control', 'no-store');
+    headers.set('content-type', upstreamResponse.headers.get('content-type') ?? 'application/json');
+    if (quota.remainingRequests !== null) {
+      headers.set('x-zhiyuan-quota-remaining', String(quota.remainingRequests));
+    }
+    if (quota.remainingTokens !== null) {
+      headers.set('x-zhiyuan-token-quota-remaining', String(quota.remainingTokens));
+    }
+
+    let resolveUsage: (usage: TokenUsage) => void = () => undefined;
+    const usage = new Promise<TokenUsage>(resolve => {
+      resolveUsage = resolve;
+    });
+    let responseBody: BodyInit | null = null;
+    try {
+      responseBody = await rewriteUpstreamResponse(
+        upstreamResponse,
+        LogicalModel.Free,
+        resolveUsage,
+      );
+    } catch (error) {
+      if (responseBody instanceof ReadableStream) await responseBody.cancel();
+      if (request.signal.aborted) await routedResponse.releaseLease?.();
+      else await (routedResponse.rejectLease?.() ?? routedResponse.releaseLease?.());
+      console.error('[ModelPool] upstream response processing failed:', error);
+      return errorResponse(
+        'upstream_error',
+        'The model service returned an invalid response.',
+        502,
+      );
+    }
+    ctx.waitUntil(
+      usage.then(async value => {
+        try {
+          await recordTokenUsage(env, policy, quotaStub, date, value);
+        } finally {
+          await routedResponse.releaseLease?.();
+        }
+      }),
+    );
+
+    if (selection && routedResponse.sessionBinding) {
       try {
-        await recordTokenUsage(env, policy, quotaStub, date, value);
-      } finally {
+        request.signal.throwIfAborted();
+        if (
+          !(await quotaStub.finishSession(
+            sessionKey,
+            selection.token,
+            routedResponse.sessionBinding,
+          ))
+        ) {
+          throw new Error('Session selection lease expired');
+        }
+      } catch (error) {
+        // Local selection failure is not evidence of an unhealthy upstream key.
+        if (responseBody instanceof ReadableStream) await responseBody.cancel();
         await routedResponse.releaseLease?.();
+        console.warn('[ModelPool] session binding could not be committed:', error);
+        const response = errorResponse(
+          'session_busy',
+          'Session routing changed. Retry shortly.',
+          503,
+        );
+        response.headers.set('retry-after', '2');
+        return response;
       }
-    }),
-  );
+    }
 
-  return new Response(responseBody, {
-    status: upstreamResponse.status,
-    headers,
-  });
+    return new Response(responseBody, {
+      status: upstreamResponse.status,
+      headers,
+    });
+  } finally {
+    if (selection) await quotaStub.releaseSession(sessionKey, selection.token);
+  }
 }
 
 export default {

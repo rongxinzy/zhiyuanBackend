@@ -1,0 +1,12 @@
+{
+  "name": "model-pool-affinity-test",
+  "main": "affinity-worker.ts",
+  "compatibility_date": "2026-07-29",
+  "durable_objects": {
+    "bindings": [
+      { "name": "USER_QUOTA", "class_name": "UserQuota" },
+      { "name": "PROVIDER_POOL", "class_name": "ProviderPool" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["UserQuota", "ProviderPool"] }]
+}

@@ -25,6 +25,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Install Worker test runtime
+        run: npm ci
+      - name: Type-check Model Pool
+        run: |
+          npm run types:model-pool
+          npm run check:model-pool
       - name: Validate relay syntax and offline contracts
         run: |
           node --check services/agens-relay/relay.mjs
