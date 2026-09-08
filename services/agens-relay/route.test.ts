@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { isRouteConfig, RouteMode, ProviderNodeKind } from '../../workers/model-pool/src/routing.ts';
 import { MODEL } from './relay.mjs';
 
-test('production route shares one Agens key health scope and preserves workload ceilings', async () => {
+test('production route shares each Agens key health scope across workloads and preserves ceilings', async () => {
   const route: unknown = JSON.parse(await readFile(new URL('../../workers/model-pool/cloudflare/provider-pool.route.json', import.meta.url), 'utf8'));
   assert.ok(isRouteConfig(route));
   assert.equal(route.mode, RouteMode.ProviderPool);
@@ -19,7 +19,10 @@ test('production route shares one Agens key health scope and preserves workload 
     if (node.kind !== ProviderNodeKind.Direct) throw new Error('Expected direct relay');
     assert.equal(node.model, MODEL);
     assert.equal(node.baseUrl, 'https://zhiyuan-agens-relay-v2.vercel.app/api');
-    assert.equal(node.maxAliasAttempts, 1);
+    assert.equal(node.maxAliasAttempts, 2);
+    assert.equal(node.aliases.length, 3);
+    assert.equal(new Set(node.aliases.map(alias => alias.secretBinding)).size, 3);
+    assert.equal(new Set(node.aliases.map(alias => alias.quotaScopeId)).size, 3);
     assert.equal(node.aliases[0].secretBinding, 'AGENS_RELAY_TOKEN_V2');
     assert.equal(node.aliases[0].id, 'key-2');
     assert.equal(node.aliases[0].quotaScopeId, 'agens-key-2');

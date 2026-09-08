@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRelay, MODEL, MAX_BODY_BYTES } from './relay.mjs';
+import { parseCredentials } from './credentials.mjs';
 
 const token = 'test-relay-token';
 const apiKey = 'test-provider-key';
@@ -11,6 +12,25 @@ function request(body = {}, headers = {}, signal?: AbortSignal) {
     body: JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'OK' }], ...body }),
   });
 }
+
+test('internal credentials select one key without relay-side failover', async () => {
+  const second = { token: 'second-private-relay-token-32-characters', apiKey: 'second-provider-key' };
+  const credentials = parseCredentials(JSON.stringify([second]));
+  const calls: string[] = [];
+  const relay = createRelay({ token, apiKey, credentials, fetcher: async (_url: string, init: RequestInit) => {
+    calls.push(new Headers(init.headers).get('authorization')!);
+    return new Response(null, { status: 429 });
+  } });
+  assert.equal((await relay(request({}, { authorization: `Bearer ${second.token}` }))).status, 429);
+  assert.deepEqual(calls, [`Bearer ${second.apiKey}`]);
+  assert.equal((await relay(request())).status, 429);
+  assert.deepEqual(calls, [`Bearer ${second.apiKey}`, `Bearer ${apiKey}`]);
+  assert.equal((await relay(request({}, { authorization: 'Bearer unknown' }))).status, 401);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(parseCredentials(undefined), []);
+  for (const input of ['{', '{}', '[{}]', JSON.stringify([second, second])])
+    assert.throws(() => parseCredentials(input));
+});
 
 test('authentication, model and size validation never reach upstream', async () => {
   const relay = createRelay({ token, apiKey, fetcher: () => assert.fail('Unexpected fetch') });
