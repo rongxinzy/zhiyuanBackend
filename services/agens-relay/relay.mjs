@@ -47,7 +47,7 @@ async function readBody(request) {
 }
 
 // Dependency injection keeps tests offline; callers cannot select the upstream URL.
-export function createRelay({ token, apiKey, fetcher = fetch, timeoutMs = 55_000 }) {
+export function createRelay({ token, apiKey, fetcher = fetch, timeoutMs = 175_000 }) {
   return async request => {
     if (!token || !apiKey) return error(503, 'relay_unconfigured');
     if (!authorized(request, token)) return error(401, 'unauthorized');

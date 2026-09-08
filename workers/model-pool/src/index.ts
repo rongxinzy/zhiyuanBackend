@@ -13,6 +13,12 @@ import { ProviderPool } from './provider-pool.ts';
 import { observationFromResponse, shouldTryNextProvider } from './provider-observation.ts';
 import { rewriteUpstreamResponse } from './response-rewrite.ts';
 import {
+  SelectionBudget,
+  SelectionBudgetExceededError,
+  UpstreamTimeoutError,
+  timedUpstream,
+} from './upstream-timing.ts';
+import {
   isRouteConfig,
   ModelPoolWorkload,
   ProviderNodeKind,
@@ -291,6 +297,7 @@ async function runWorkersAi(
   model: string,
   request: Request,
   env: Env,
+  signal = request.signal,
 ): Promise<Response> {
   body.model = model;
   return (await env.AI.run(model, body as ChatCompletionsMessagesInput, {
@@ -303,7 +310,7 @@ async function runWorkersAi(
       },
     },
     returnRawResponse: true,
-    signal: request.signal,
+    signal,
   })) as unknown as Response;
 }
 
@@ -335,6 +342,7 @@ async function runGatewayProvider(
   env: Env,
   affinityKey: string,
   binding: SessionBinding | null,
+  budget: SelectionBudget,
 ): Promise<RoutedResponse | null> {
   const poolId = env.PROVIDER_POOL.idFromName(`${route.gatewayId}:${node.poolId}`);
   const pool = env.PROVIDER_POOL.get(poolId);
@@ -343,6 +351,7 @@ async function runGatewayProvider(
   const upstreamUrl = new URL('chat/completions', `${gatewayUrl.replace(/\/$/, '')}/`);
 
   for (let attempt = 0; attempt < node.maxAliasAttempts; attempt += 1) {
+    budget.remaining(node.timeoutMs);
     request.signal.throwIfAborted();
     const lease = await pool.acquire(
       node,
@@ -356,25 +365,32 @@ async function runGatewayProvider(
 
     let response: Response;
     try {
-      response = await fetch(upstreamUrl, {
-        method: 'POST',
-        headers: {
-          accept: request.headers.get('accept') ?? 'application/json',
-          'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}`,
-          'cf-aig-byok-alias': lease.alias,
-          'content-type': 'application/json',
-          'user-agent': 'ZhiYuanModelPool/1.0',
-        },
-        body: JSON.stringify({ ...body, model: node.model }),
-        signal: AbortSignal.any([request.signal, AbortSignal.timeout(node.timeoutMs)]),
-      });
+      response = await timedUpstream(
+        signal =>
+          fetch(upstreamUrl, {
+            method: 'POST',
+            headers: {
+              accept: request.headers.get('accept') ?? 'application/json',
+              'cf-aig-authorization': `Bearer ${env.AI_GATEWAY_TOKEN}`,
+              'cf-aig-byok-alias': lease.alias,
+              'content-type': 'application/json',
+              'user-agent': 'ZhiYuanModelPool/1.0',
+            },
+            body: JSON.stringify({ ...body, model: node.model }),
+            signal,
+          }),
+        request.signal,
+        budget.remaining(node.timeoutMs),
+        body.stream === true,
+      );
     } catch (error) {
-      if (request.signal.aborted) {
+      if (request.signal.aborted || error instanceof SelectionBudgetExceededError) {
         await pool.release(lease.leaseId);
         throw error;
       }
       await pool.report(lease, failedProviderObservation());
       console.warn(`[ModelPool] provider ${node.id} request attempt failed:`, error);
+      if (error instanceof UpstreamTimeoutError) return null;
       continue;
     }
 
@@ -405,6 +421,7 @@ async function runDirectProvider(
   env: Env,
   affinityKey: string,
   binding: SessionBinding | null,
+  budget: SelectionBudget,
 ): Promise<RoutedResponse | null> {
   const poolId = env.PROVIDER_POOL.idFromName(`${route.gatewayId}:${node.poolId}`);
   const pool = env.PROVIDER_POOL.get(poolId);
@@ -412,6 +429,7 @@ async function runDirectProvider(
   const upstreamUrl = new URL('chat/completions', `${node.baseUrl.replace(/\/$/, '')}/`);
 
   for (let attempt = 0; attempt < node.maxAliasAttempts; attempt += 1) {
+    budget.remaining(node.timeoutMs);
     request.signal.throwIfAborted();
     const lease = await pool.acquire(
       node,
@@ -432,24 +450,31 @@ async function runDirectProvider(
 
     let response: Response;
     try {
-      response = await fetch(upstreamUrl, {
-        method: 'POST',
-        headers: {
-          accept: request.headers.get('accept') ?? 'application/json',
-          authorization: `Bearer ${secret}`,
-          'content-type': 'application/json',
-          'user-agent': 'ZhiYuanModelPool/1.0',
-        },
-        body: JSON.stringify({ ...body, model: node.model }),
-        signal: AbortSignal.any([request.signal, AbortSignal.timeout(node.timeoutMs)]),
-      });
+      response = await timedUpstream(
+        signal =>
+          fetch(upstreamUrl, {
+            method: 'POST',
+            headers: {
+              accept: request.headers.get('accept') ?? 'application/json',
+              authorization: `Bearer ${secret}`,
+              'content-type': 'application/json',
+              'user-agent': 'ZhiYuanModelPool/1.0',
+            },
+            body: JSON.stringify({ ...body, model: node.model }),
+            signal,
+          }),
+        request.signal,
+        budget.remaining(node.timeoutMs),
+        body.stream === true,
+      );
     } catch (error) {
-      if (request.signal.aborted) {
+      if (request.signal.aborted || error instanceof SelectionBudgetExceededError) {
         await pool.release(lease.leaseId);
         throw error;
       }
       await pool.report(lease, failedProviderObservation());
       console.warn(`[ModelPool] provider ${node.id} request attempt failed:`, error);
+      if (error instanceof UpstreamTimeoutError) return null;
       continue;
     }
 
@@ -482,11 +507,18 @@ async function runProviderPool(
   binding: SessionBinding | null,
 ): Promise<RoutedResponse> {
   const workloadRoute = route.routes[workload];
+  const budget = new SelectionBudget(workload);
   for (const node of orderSessionNodes(route.gatewayId, workloadRoute.nodes, binding)) {
+    budget.remaining();
     request.signal.throwIfAborted();
     if (node.kind === ProviderNodeKind.WorkersAi) {
       try {
-        const response = await runWorkersAi(body, route.gatewayId, node.model, request, env);
+        const response = await timedUpstream(
+          signal => runWorkersAi(body, route.gatewayId, node.model, request, env, signal),
+          request.signal,
+          budget.remaining(),
+          body.stream === true,
+        );
         if (response.ok)
           return { response, sessionBinding: bindSession(route.gatewayId, node, null) };
         if (!shouldTryNextProvider(response.status)) return { response };
@@ -509,6 +541,7 @@ async function runProviderPool(
             env,
             `${workload}:${conversationId}`,
             binding,
+            budget,
           )
         : await runGatewayProvider(
             body,
@@ -518,6 +551,7 @@ async function runProviderPool(
             env,
             `${workload}:${conversationId}`,
             binding,
+            budget,
           );
     if (result) return result;
   }
@@ -780,6 +814,10 @@ async function proxyChatCompletions(
         upstreamResponse,
         LogicalModel.Free,
         resolveUsage,
+        () => {
+          if (!request.signal.aborted && routedResponse.rejectLease)
+            ctx.waitUntil(routedResponse.rejectLease());
+        },
       );
     } catch (error) {
       if (responseBody instanceof ReadableStream) await responseBody.cancel();
@@ -820,7 +858,7 @@ async function proxyChatCompletions(
         await routedResponse.releaseLease?.();
         console.warn('[ModelPool] session binding could not be committed:', error);
         const response = errorResponse(
-          'session_busy',
+          'session_selection_failed',
           'Session routing changed. Retry shortly.',
           503,
         );
