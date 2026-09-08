@@ -26,6 +26,8 @@
 
 ## Validation and rollout
 
+The OpenRouter Chat node uses `openrouter/free` instead of an expiring individual free-model slug. ZhiYuan affinity pins the OpenRouter node and eligible key. Selection of the physical model inside OpenRouter is owned by OpenRouter; neither a stable physical model nor provider-side session affinity is guaranteed by this integration. Request history continues to be sent on every turn. See https://openrouter.ai/openrouter/free for feature-aware routing. Work ordering, aliases, quotas and fallback policy remain unchanged.
+
 `npm run test:model-pool` includes SQLite persistence/fencing/expiry/isolation tests, deterministic 10,000-session distribution checks, and local Wrangler/workerd tests against the real Durable Object RPC and SQL implementations. The runtime fixture has no production bindings or credentials and makes no inference calls.
 
 The desktop Chat IPC must send `conversationId: chatId` separately from its per-request stream ID. The agent runtime already sends its stable session ID. Deploy the backend through the existing Worker release workflow; the desktop change requires the normal application release. No new Cloudflare namespace or migration tag is needed because both existing classes use SQLite storage already.

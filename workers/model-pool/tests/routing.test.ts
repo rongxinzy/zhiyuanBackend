@@ -25,7 +25,7 @@ const route = {
           id: 'openrouter-chat',
           kind: ProviderNodeKind.Gateway,
           maxAliasAttempts: 1,
-          model: 'minimax/minimax-m3:free',
+          model: 'openrouter/free',
           poolId: 'openrouter',
           provider: 'openrouter',
           timeoutMs: 30_000,
