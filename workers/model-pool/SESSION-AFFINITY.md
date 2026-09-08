@@ -11,9 +11,18 @@
 ## Concurrency and failure boundaries
 
 - A fenced, five-minute selection lease serializes route selection for one user/session/workload, not the whole stream or every session of a user. A concurrent selector receives HTTP 503 with `Retry-After: 2` before request quota is charged. Reaching the session-record cap also rejects new selections until records expire; existing sessions remain available.
-- Bindings commit after response rewriting is initialized (after JSON parsing for non-stream responses, before streaming bytes are delivered). HTTP errors, canceled selections and failed initialization do not replace a binding. A stale selection cannot overwrite a newer one.
+- Bindings commit after a useful SSE event has been received and response rewriting is initialized (after JSON parsing for non-stream responses, before streaming bytes are delivered). HTTP errors, canceled selections and failed initialization do not replace a binding. A stale selection cannot overwrite a newer one. A post-inference binding failure uses `session_selection_failed`, never the safely retryable `session_busy` code.
 - Provider leases remain active until stream accounting completes. Once streaming has begun, this change does not retry/replay partial output, replay tools, or guarantee recovery from truncated SSE. Affinity does not store conversation content or guarantee provider-side prompt cache hits.
 - Affinity is intentionally stronger than load balancing for healthy existing sessions. New sessions and migrations absorb load shifts; this is not a strict per-key concurrency/RPM ceiling, nor a promise of equal token volume across keys.
+
+## Stream reliability
+
+- Provider selection shares a 30-second Chat / 45-second Work budget. An individual attempt waits at most 8 / 12 seconds (or the smaller configured timeout / remaining budget) for the first useful content, reasoning, tool or terminal event. Headers, role-only frames and heartbeat comments do not satisfy that deadline. These are initial policy values, not measured production latency guarantees; authentication and business-policy lookup precede this budget.
+- A first-event timeout advances to the next provider node instead of spending the shared budget on another alias at the same slow node. Authentication and quota rejections retain eligible-key failover.
+- After useful output, the short timer is cleared. Streams have a 30-second idle timeout and a 150-second total attempt limit. Body reads for HTTP errors are also bounded. The first-event preamble is capped at 64 KiB and SSE buffering at 1 MiB.
+- Missing terminal events and malformed SSE fail the stream. Usage already observed is recorded; failed keyed streams are reported to provider health, while user cancellation only releases resources. No partial stream is automatically replayed.
+- Desktop Chat retries only `session_busy` before inference, at most twice, honoring Retry-After up to three seconds and canceling backoff when stopped. Unknown 503s and `session_selection_failed` are not retried. EOF without termination is surfaced as interruption, length termination is distinct, and canceled/closed renderer streams detach listeners and ignore late callbacks.
+- Agens relay must be republished with its 175-second safety deadline and Vercel maxDuration 180 seconds, so it does not cut off the Worker's 150-second attempt first. Confirm Fluid Compute / allowed duration during deployment; see https://vercel.com/docs/functions/configuring-functions/duration. No project setting, subscription, deployment or quota was changed by this patch. Deploy the relay update before the Worker update to remove the old 55-second cutoff.
 
 ## Validation and rollout
 

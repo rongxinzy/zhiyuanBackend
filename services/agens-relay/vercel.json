@@ -3,7 +3,7 @@
   "regions": ["iad1"],
   "functions": {
     "api/chat/completions.mjs": {
-      "maxDuration": 60,
+      "maxDuration": 180,
       "supportsCancellation": true
     }
   }
