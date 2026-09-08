@@ -41,6 +41,18 @@
           ]
         },
         {
+          "id": "agens-chat",
+          "kind": "direct",
+          "baseUrl": "https://zhiyuan-agens-relay.vercel.app/api",
+          "model": "agnes-2.5-flash",
+          "poolId": "agens",
+          "timeoutMs": 60000,
+          "maxAliasAttempts": 1,
+          "aliases": [
+            { "id": "key-2", "quotaScopeId": "agens-key-2", "weight": 1, "secretBinding": "AGENS_RELAY_TOKEN" }
+          ]
+        },
+        {
           "id": "workers-ai-chat",
           "kind": "workers-ai",
           "model": "@cf/ibm-granite/granite-4.0-h-micro"
@@ -106,6 +118,18 @@
             { "id": "pool-2", "quotaScopeId": "groq-pool-2", "weight": 1 },
             { "id": "pool-3", "quotaScopeId": "groq-pool-3", "weight": 1 },
             { "id": "pool-4", "quotaScopeId": "groq-pool-4", "weight": 1 }
+          ]
+        },
+        {
+          "id": "agens-work",
+          "kind": "direct",
+          "baseUrl": "https://zhiyuan-agens-relay.vercel.app/api",
+          "model": "agnes-2.5-flash",
+          "poolId": "agens",
+          "timeoutMs": 60000,
+          "maxAliasAttempts": 1,
+          "aliases": [
+            { "id": "key-2", "quotaScopeId": "agens-key-2", "weight": 1, "secretBinding": "AGENS_RELAY_TOKEN" }
           ]
         },
         {

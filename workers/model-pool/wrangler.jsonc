@@ -65,6 +65,7 @@
   },
   "secrets": {
     "required": [
+      "AGENS_RELAY_TOKEN",
       "AI_GATEWAY_TOKEN",
       "MODEL_POOL_TEST_TOKEN",
       "TOKENROUTER_API_KEY_1",
@@ -124,6 +125,7 @@
       },
       "secrets": {
         "required": [
+          "AGENS_RELAY_TOKEN",
           "AI_GATEWAY_TOKEN",
           "MODEL_POOL_TEST_TOKEN",
           "TOKENROUTER_API_KEY_1",
