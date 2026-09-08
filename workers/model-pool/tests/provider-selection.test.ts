@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { selectProvider, FallbackPolicy } from '../src/provider-selection.ts';
-import { isRouteConfig, ModelPoolWorkload, RouteMode } from '../src/routing.ts';
+import { isRouteConfig, ModelPoolWorkload, ProviderNodeKind, RouteMode } from '../src/routing.ts';
 import { SelectionBudgetExceededError, timedUpstream } from '../src/upstream-timing.ts';
 
 const route = JSON.parse(
@@ -10,6 +10,19 @@ const route = JSON.parse(
 );
 if (!isRouteConfig(route) || route.mode !== RouteMode.ProviderPool)
   throw new Error('Invalid fixture');
+
+test('relay keeps the same Kimi quota scope, and gateway rollback retains fallback budget', async t => {
+  t.mock.method(Date, 'now', () => 0);
+  const node = route.routes[ModelPoolWorkload.Work].nodes.find(node => node.kind !== ProviderNodeKind.WorkersAi && node.poolId === 'kimi');
+  assert.ok(node && node.kind === ProviderNodeKind.Direct);
+  assert.equal(node.model, 'kimi-for-coding');
+  assert.equal(node.aliases[0].quotaScopeId, 'kimi-default');
+  assert.equal(node.aliases[0].secretBinding, 'KIMI_RELAY_TOKEN');
+  assert.equal(node.aliases[0].id, 'vercel-default');
+  const gateway = { ...node, kind: ProviderNodeKind.Gateway, provider: 'custom-kimi-code' };
+  await selectProvider([gateway], ModelPoolWorkload.Work, new AbortController().signal,
+    async (_node, budget) => { assert.equal(budget.remaining(), 45_000); return true; });
+});
 
 for (const workload of Object.values(ModelPoolWorkload)) {
   const nodes = route.routes[workload].nodes;

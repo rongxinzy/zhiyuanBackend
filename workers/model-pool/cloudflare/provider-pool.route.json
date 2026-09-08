@@ -77,14 +77,14 @@
         },
         {
           "id": "kimi-chat",
-          "kind": "gateway",
-          "provider": "custom-kimi-code",
+          "kind": "direct",
+          "baseUrl": "https://zhiyuan-kimi-relay.vercel.app/api",
           "model": "kimi-for-coding",
           "poolId": "kimi",
           "timeoutMs": 30000,
           "maxAliasAttempts": 1,
           "aliases": [
-            { "id": "default", "quotaScopeId": "kimi-default", "weight": 1 }
+            { "id": "vercel-default", "quotaScopeId": "kimi-default", "weight": 1, "secretBinding": "KIMI_RELAY_TOKEN" }
           ]
         }
       ]
@@ -145,14 +145,14 @@
         },
         {
           "id": "kimi-work",
-          "kind": "gateway",
-          "provider": "custom-kimi-code",
+          "kind": "direct",
+          "baseUrl": "https://zhiyuan-kimi-relay.vercel.app/api",
           "model": "kimi-for-coding",
           "poolId": "kimi",
           "timeoutMs": 45000,
           "maxAliasAttempts": 1,
           "aliases": [
-            { "id": "default", "quotaScopeId": "kimi-default", "weight": 1 }
+            { "id": "vercel-default", "quotaScopeId": "kimi-default", "weight": 1, "secretBinding": "KIMI_RELAY_TOKEN" }
           ]
         },
         {

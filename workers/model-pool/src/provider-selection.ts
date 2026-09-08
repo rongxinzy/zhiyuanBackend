@@ -2,7 +2,7 @@ import { ModelPoolWorkload, ProviderNodeKind, type ProviderNode } from './routin
 import { SelectionBudget, SelectionBudgetExceededError } from './upstream-timing.ts';
 
 export const FallbackPolicy = {
-  Provider: 'custom-kimi-code',
+  PoolId: 'kimi',
   ChatReserveMs: 15_000,
   WorkReserveMs: 25_000,
 } as const;
@@ -19,7 +19,7 @@ export async function selectProvider<T>(
   const overall = new SelectionBudget(workload, started);
   const pending = [...nodes];
   let fallback = pending.find(
-    node => node.kind === ProviderNodeKind.Gateway && node.provider === FallbackPolicy.Provider,
+    node => node.kind !== ProviderNodeKind.WorkersAi && node.poolId === FallbackPolicy.PoolId,
   );
   const reserve =
     workload === ModelPoolWorkload.Chat
