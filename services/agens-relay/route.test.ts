@@ -18,9 +18,11 @@ test('production route shares one Agens key health scope and preserves workload 
     assert.equal(node.kind, ProviderNodeKind.Direct);
     if (node.kind !== ProviderNodeKind.Direct) throw new Error('Expected direct relay');
     assert.equal(node.model, MODEL);
-    assert.equal(node.baseUrl, 'https://zhiyuan-agens-relay.vercel.app/api');
+    assert.equal(node.baseUrl, 'https://zhiyuan-agens-relay-v2.vercel.app/api');
     assert.equal(node.maxAliasAttempts, 1);
-    assert.equal(node.aliases[0].secretBinding, 'AGENS_RELAY_TOKEN');
+    assert.equal(node.aliases[0].secretBinding, 'AGENS_RELAY_TOKEN_V2');
+    assert.equal(node.aliases[0].id, 'key-2');
+    assert.equal(node.aliases[0].quotaScopeId, 'agens-key-2');
     return node;
   });
   assert.equal(nodes[0].poolId, nodes[1].poolId);

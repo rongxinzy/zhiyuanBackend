@@ -21,7 +21,7 @@ const files = await Promise.all([
 const response = await fetch(`https://api.vercel.com/v13/deployments?teamId=${encodeURIComponent(team)}`, {
   method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
   body: JSON.stringify({
-    name: 'zhiyuan-agens-relay', target: 'production', projectSettings: { framework: null },
+    name: 'zhiyuan-agens-relay-v2', target: 'production', projectSettings: { framework: null },
     files, env: { AGENS_RELAY_TOKEN: relayToken, AGENS_API_KEY: keys[index] },
   }),
 });
