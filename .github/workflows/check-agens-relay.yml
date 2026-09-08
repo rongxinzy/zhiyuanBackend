@@ -1,0 +1,34 @@
+name: Check Agens relay
+
+on:
+  pull_request:
+    paths:
+      - 'services/agens-relay/**'
+      - 'workers/model-pool/**'
+      - '.github/workflows/check-agens-relay.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'services/agens-relay/**'
+      - 'workers/model-pool/**'
+      - '.github/workflows/check-agens-relay.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate relay syntax and offline contracts
+        run: |
+          node --check services/agens-relay/relay.mjs
+          node --check services/agens-relay/api/chat/completions.mjs
+          node --check services/agens-relay/deploy.mjs
+          npm run test:agens-relay
+          npm run test:model-pool

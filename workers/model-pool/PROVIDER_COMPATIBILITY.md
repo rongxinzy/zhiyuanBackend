@@ -1,6 +1,6 @@
 # Model Pool provider compatibility
 
-Last verified: 2026-09-07
+Last verified: 2026-09-08
 
 This matrix records protocol evidence for admitting a provider into a ZhiYuan logical-model route. A provider is added only to protocol routes it has passed. Credentials and physical model names remain server-side.
 
@@ -11,7 +11,19 @@ This matrix records protocol evidence for admitting a provider into a ZhiYuan lo
 | OpenRouter MiniMax M3 Free | Pass | Pass | Pass for both protocols | Not admitted for Work | First AI Gateway Chat fallback through six aliases |
 | Kimi K2.7 Code standard (`kimi-for-coding`) | Pass | Documented; not tested | Pass | Pass | Late Chat/Work fallback via `custom-kimi-code`; K3 and HighSpeed are intentionally excluded to conserve quota |
 | Workers AI | Pass | Not supported by Cloudflare `/ai/v1/messages` | Pass | Pass for admitted Work models | Low-cost Chat fallback and tool-capable Work fallback |
-| Agnes | Blocked by origin HTTP 1015 | Not tested | Not tested | Not tested | Excluded |
+| Agnes 2.5 Flash | Pass via Cloudflare → authenticated Vercel relay | Not tested | Pass with usage and DONE | Pass non-streaming and streaming | Chat/Work fallback using one verified key; direct Cloudflare egress remains excluded |
+
+## Agens Vercel relay evidence and boundary
+
+The `iad1` Vercel Node.js relay calls `agnes-2.5-flash` using the second supplied key. The first key returned 401 and is not provisioned. Local and Vercel requests succeeded with the same valid key; this does not establish that every Cloudflare IP is blocked or every Agens key is healthy.
+
+- Direct relay tests passed non-streaming required tool calls and streamed tool calls with usage and `[DONE]`.
+- An Agens-only staging KV route passed Cloudflare streamed tool calling, logical-model rewriting and usage. No alternative provider was present to mask a failure.
+- The guest suite passed non-streaming Chat, Work tool calling and SSE/usage through the staging route containing an intentionally invalid relay alias followed by the valid Agens alias. The invalid alias's separate test health scope was then removed from KV.
+- One earlier ordinary SSE request returned 502; subsequent direct and Cloudflare SSE tests passed. Agens remains best-effort capacity behind existing preferred providers, with existing fallbacks after it. This is admission evidence, not a load test or availability SLA.
+- Relay 401/403/429/5xx signals and quota headers are preserved for Cloudflare's health scheduler; upstream error bodies are sanitized. There is no IP rotation or retry inside the relay.
+
+Deployment, key rotation and rollback instructions live in [services/agens-relay](../../services/agens-relay/README.md). No frontend changes or new public model IDs are required.
 
 ## Kimi Code evidence and boundary
 

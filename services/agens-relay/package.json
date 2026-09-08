@@ -1,0 +1,7 @@
+{
+  "name": "zhiyuan-agens-relay",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "24.x" },
+  "scripts": { "test": "node --test relay.test.ts" }
+}
