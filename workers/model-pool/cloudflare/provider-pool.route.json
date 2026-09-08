@@ -27,7 +27,7 @@
           "id": "openrouter-chat",
           "kind": "gateway",
           "provider": "openrouter",
-          "model": "minimax/minimax-m3:free",
+          "model": "openrouter/free",
           "poolId": "openrouter",
           "timeoutMs": 30000,
           "maxAliasAttempts": 2,
