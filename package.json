@@ -11,6 +11,7 @@
     "check:model-pool": "node ./node_modules/typescript/bin/tsc --project workers/model-pool/tsconfig.json --noEmit",
     "test:model-pool": "node --experimental-strip-types --test workers/model-pool/tests/*.test.ts",
     "test:agens-relay": "node --test services/agens-relay/*.test.ts",
+    "test:kimi-relay": "node --test services/kimi-relay/*.test.ts",
     "smoke:model-pool:staging": "node workers/model-pool/scripts/smoke.mjs",
     "check:community-auth": "node ./node_modules/typescript/bin/tsc --project workers/community-auth/tsconfig.json --noEmit",
     "test:community-auth": "node --experimental-strip-types --test workers/community-auth/tests/*.test.ts",

@@ -20,7 +20,8 @@
             { "id": "default", "quotaScopeId": "tokenrouter-default", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_1" },
             { "id": "pool-2", "quotaScopeId": "tokenrouter-pool-2", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_2" },
             { "id": "pool-3", "quotaScopeId": "tokenrouter-pool-3", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_3" },
-            { "id": "pool-4", "quotaScopeId": "tokenrouter-pool-4", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_4" }
+            { "id": "pool-4", "quotaScopeId": "tokenrouter-pool-4", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_4" },
+            { "id": "pool-5", "quotaScopeId": "tokenrouter-pool-5", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_5" }
           ]
         },
         {
@@ -47,9 +48,11 @@
           "model": "agnes-2.5-flash",
           "poolId": "agens",
           "timeoutMs": 60000,
-          "maxAliasAttempts": 1,
+          "maxAliasAttempts": 2,
           "aliases": [
-            { "id": "key-2", "quotaScopeId": "agens-key-2", "weight": 1, "secretBinding": "AGENS_RELAY_TOKEN_V2" }
+            { "id": "key-2", "quotaScopeId": "agens-key-2", "weight": 1, "secretBinding": "AGENS_RELAY_TOKEN_V2" },
+            { "id": "key-3", "quotaScopeId": "agens-key-3", "weight": 1, "secretBinding": "AGENS_RELAY_TOKEN_KEY_3" },
+            { "id": "key-4", "quotaScopeId": "agens-key-4", "weight": 1, "secretBinding": "AGENS_RELAY_TOKEN_KEY_4" }
           ]
         },
         {
@@ -74,14 +77,14 @@
         },
         {
           "id": "kimi-chat",
-          "kind": "gateway",
-          "provider": "custom-kimi-code",
+          "kind": "direct",
+          "baseUrl": "https://zhiyuan-kimi-relay.vercel.app/api",
           "model": "kimi-for-coding",
           "poolId": "kimi",
           "timeoutMs": 30000,
           "maxAliasAttempts": 1,
           "aliases": [
-            { "id": "default", "quotaScopeId": "kimi-default", "weight": 1 }
+            { "id": "vercel-default", "quotaScopeId": "kimi-default", "weight": 1, "secretBinding": "KIMI_RELAY_TOKEN" }
           ]
         }
       ]
@@ -102,7 +105,8 @@
             { "id": "default", "quotaScopeId": "tokenrouter-default", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_1" },
             { "id": "pool-2", "quotaScopeId": "tokenrouter-pool-2", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_2" },
             { "id": "pool-3", "quotaScopeId": "tokenrouter-pool-3", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_3" },
-            { "id": "pool-4", "quotaScopeId": "tokenrouter-pool-4", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_4" }
+            { "id": "pool-4", "quotaScopeId": "tokenrouter-pool-4", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_4" },
+            { "id": "pool-5", "quotaScopeId": "tokenrouter-pool-5", "weight": 1, "secretBinding": "TOKENROUTER_API_KEY_5" }
           ]
         },
         {
@@ -127,9 +131,11 @@
           "model": "agnes-2.5-flash",
           "poolId": "agens",
           "timeoutMs": 60000,
-          "maxAliasAttempts": 1,
+          "maxAliasAttempts": 2,
           "aliases": [
-            { "id": "key-2", "quotaScopeId": "agens-key-2", "weight": 1, "secretBinding": "AGENS_RELAY_TOKEN_V2" }
+            { "id": "key-2", "quotaScopeId": "agens-key-2", "weight": 1, "secretBinding": "AGENS_RELAY_TOKEN_V2" },
+            { "id": "key-3", "quotaScopeId": "agens-key-3", "weight": 1, "secretBinding": "AGENS_RELAY_TOKEN_KEY_3" },
+            { "id": "key-4", "quotaScopeId": "agens-key-4", "weight": 1, "secretBinding": "AGENS_RELAY_TOKEN_KEY_4" }
           ]
         },
         {
@@ -139,14 +145,14 @@
         },
         {
           "id": "kimi-work",
-          "kind": "gateway",
-          "provider": "custom-kimi-code",
+          "kind": "direct",
+          "baseUrl": "https://zhiyuan-kimi-relay.vercel.app/api",
           "model": "kimi-for-coding",
           "poolId": "kimi",
           "timeoutMs": 45000,
           "maxAliasAttempts": 1,
           "aliases": [
-            { "id": "default", "quotaScopeId": "kimi-default", "weight": 1 }
+            { "id": "vercel-default", "quotaScopeId": "kimi-default", "weight": 1, "secretBinding": "KIMI_RELAY_TOKEN" }
           ]
         },
         {

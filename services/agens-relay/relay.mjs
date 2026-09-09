@@ -47,10 +47,13 @@ async function readBody(request) {
 }
 
 // Dependency injection keeps tests offline; callers cannot select the upstream URL.
-export function createRelay({ token, apiKey, fetcher = fetch, timeoutMs = 175_000 }) {
+export function createRelay({ token, apiKey, credentials = [], fetcher = fetch, timeoutMs = 175_000 }) {
+  const keys = [...credentials];
+  if (token && apiKey) keys.push({ token, apiKey });
   return async request => {
-    if (!token || !apiKey) return error(503, 'relay_unconfigured');
-    if (!authorized(request, token)) return error(401, 'unauthorized');
+    if (keys.length === 0) return error(503, 'relay_unconfigured');
+    const selected = keys.find(key => authorized(request, key.token));
+    if (!selected) return error(401, 'unauthorized');
     if (request.method !== 'POST') return error(405, 'method_not_allowed', { allow: 'POST' });
     let body;
     try {
@@ -78,7 +81,7 @@ export function createRelay({ token, apiKey, fetcher = fetch, timeoutMs = 175_00
       upstream = await fetcher(UPSTREAM, {
         method: 'POST', redirect: 'error', signal,
         headers: {
-          authorization: `Bearer ${apiKey}`, 'content-type': 'application/json',
+          authorization: `Bearer ${selected.apiKey}`, 'content-type': 'application/json',
           accept: body.stream ? 'text/event-stream' : 'application/json',
         },
         body: JSON.stringify(body),

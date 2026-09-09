@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { parseCredentials } from './credentials.mjs';
 
 // Secret values are read from private files, never command-line arguments or deployment logs.
 const root = fileURLToPath(new URL('.', import.meta.url));
@@ -15,14 +16,19 @@ if (!Number.isInteger(index) || !keys[index] || relayToken.length < 32) {
   throw new Error('Invalid key index or relay token');
 }
 const team = required('VERCEL_TEAM_ID');
+const pool = process.env.POOL_CREDENTIALS_FILE
+  ? await readFile(process.env.POOL_CREDENTIALS_FILE, 'utf8') : undefined;
+if (pool) parseCredentials(pool);
 const files = await Promise.all([
-  'api/chat/completions.mjs', 'relay.mjs', 'package.json', 'vercel.json',
+  'api/chat/completions.mjs', 'relay.mjs', 'credentials.mjs', 'package.json', 'vercel.json',
 ].map(async file => ({ file, data: await readFile(root + file, 'utf8') })));
 const response = await fetch(`https://api.vercel.com/v13/deployments?teamId=${encodeURIComponent(team)}`, {
   method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
   body: JSON.stringify({
     name: 'zhiyuan-agens-relay-v2', target: 'production', projectSettings: { framework: null },
-    files, env: { AGENS_RELAY_TOKEN: relayToken, AGENS_API_KEY: keys[index] },
+    files, env: { AGENS_RELAY_TOKEN: relayToken, AGENS_API_KEY: keys[index],
+      ...(pool ? { AGENS_POOL_CREDENTIALS: pool } : {}),
+    },
   }),
 });
 const deployment = await response.json();

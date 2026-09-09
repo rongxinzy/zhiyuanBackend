@@ -6,12 +6,12 @@ The Model Pool's existing direct-provider adapter calls this authenticated Verce
 
 - Only `POST /api/chat/completions`; fixed upstream `https://apihub.agnes-ai.com/v1/chat/completions`, redirects forbidden.
 - Only `agnes-2.5-flash`. No caller-selected upstream or model. JSON request limit 1 MiB; output capped at 16,384 tokens (Cloudflare retains the tighter 4,096 Chat ceiling).
-- Vercel holds `AGENS_API_KEY` and `AGENS_RELAY_TOKEN`. Cloudflare holds `AGENS_RELAY_TOKEN_V2` for the current relay. No provider key, prompt or response logging in relay code.
+- Vercel holds `AGENS_API_KEY` / `AGENS_RELAY_TOKEN` for the existing alias and sensitive `AGENS_POOL_CREDENTIALS` for additional `{token, apiKey}` pairs. Each Cloudflare alias holds its own internal token only. The relay maps that token to exactly one supplier key; key selection, affinity and failover remain in Cloudflare. No provider key, prompt or response logging in relay code.
 - The production alias is `https://zhiyuan-agens-relay-v2.vercel.app/api`. The original `zhiyuan-agens-relay` instance and `AGENS_RELAY_TOKEN` binding remain available for rollback. Unique preview/deployment URLs can be protected by Vercel SSO; do not disable deployment protection to use them.
 - SSE and JSON success bodies stream with backpressure. Consumer cancellation aborts upstream; Vercel cancellation is enabled. Overall relay timeout is 175 seconds and Vercel function limit is 180 seconds. The Worker applies a first-useful-event deadline, a 30-second idle timeout and a 150-second total attempt limit; see `workers/model-pool/SESSION-AFFINITY.md`.
 - No relay retries. HTTP 401/402/403/408/429/5xx and quota headers reach the existing Cloudflare health scheduler; upstream error bodies are replaced with generic JSON. Wrong relay credentials also produce 401.
 - A failed request before response headers can fall back. A stream already sent to the client cannot switch providers seamlessly; it fails in place. Deadline limits apply to the whole stream, not just time to first token.
-- One verified provider key is currently provisioned (`key-2`); the other supplied key returned 401 and is excluded. Chat and Work share one health/quota scope. Do not add multiple relay aliases backed by the same key as independent capacity.
+- Provisioned aliases are `key-2`, `key-3`, and `key-4`; the first supplied key remains excluded after its earlier 401. New keys 3/4 passed local and Vercel inference during provisioning; key 2 returned 401 on the latest relay probe and remains subject to the existing circuit breaker. Chat and Work share each key's health/quota identity. Distinct keys do not prove distinct account allowances; consolidate quota scopes if supplier account metadata establishes shared limits. Never duplicate the same key as independent capacity.
 - Vercel is a fixed egress hop, not an IP rotation service. Respect provider quotas and access policy; 429/403 triggers cooldown rather than egress rotation. This adds Vercel invocation/bandwidth cost and is not a guarantee of future provider availability.
 
 ## Deploy
@@ -32,10 +32,11 @@ Deploy with `node services/agens-relay/deploy.mjs`. Required environment variabl
 | `RELAY_TOKEN_FILE` | Private file with random relay token (at least 32 characters); reuse on redeploy |
 | `AGENS_KEY_FILE` | Private whitespace-separated provider key file (currently `.agnes`) |
 | `AGENS_KEY_INDEX` | Zero-based index of verified key (currently 1) |
+| `POOL_CREDENTIALS_FILE` | Optional private JSON file for additional token/key pairs; never put its contents in arguments |
 | `VERCEL_TEAM_ID` | Target Vercel team ID |
 | `DEPLOYMENT_STATE_FILE` | Private output file for deployment ID and URL |
 
-The script uploads only four named runtime/config files, never the surrounding repository or key files. Always supply credentials explicitly through the script; do not rely on `deploymentId` to inherit deployment-only variables when uploading replacement files. The v2 project also retains both values as sensitive production project variables. Poll Vercel deployment state until READY and test the production alias before updating Cloudflare. The private rotation token is retained outside Git at `/Users/krli/.config/zhiyuan-model-pool/agens-relay-v2.token`.
+The script uploads only five named runtime/config files, never the surrounding repository or key files. Always supply credentials explicitly through the script; do not rely on `deploymentId` to inherit deployment-only variables when uploading replacement files. The v2 project retains credentials as sensitive production project variables. Poll Vercel deployment state until READY and test the production alias before updating Cloudflare. The private rotation token and additional credential mapping are retained outside Git under `/Users/krli/.config/zhiyuan-model-pool/`.
 
 Provision `AGENS_RELAY_TOKEN_V2` with Wrangler `secret put` via stdin in staging and production. Never place credentials in KV, Git, command arguments or issue/PR output. The Wrangler secret update activates the binding without a source redeploy; no Worker application code changes are required for this node. Preserve the provider alias and quota scope during internal-token rotation because the underlying provider key has not changed.
 

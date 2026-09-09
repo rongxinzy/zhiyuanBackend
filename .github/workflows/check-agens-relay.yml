@@ -1,15 +1,17 @@
-name: Check Agens relay
+name: Check provider relays
 
 on:
   pull_request:
     paths:
       - 'services/agens-relay/**'
+      - 'services/kimi-relay/**'
       - 'workers/model-pool/**'
       - '.github/workflows/check-agens-relay.yml'
   push:
     branches: [main]
     paths:
       - 'services/agens-relay/**'
+      - 'services/kimi-relay/**'
       - 'workers/model-pool/**'
       - '.github/workflows/check-agens-relay.yml'
 
@@ -37,4 +39,7 @@ jobs:
           node --check services/agens-relay/api/chat/completions.mjs
           node --check services/agens-relay/deploy.mjs
           npm run test:agens-relay
+          node --check services/kimi-relay/api/chat/completions.mjs
+          node --check services/kimi-relay/deploy.mjs
+          npm run test:kimi-relay
           npm run test:model-pool

@@ -41,5 +41,10 @@ test('real Durable Object RPC honors affinity, health, quota and selection exclu
     workCalls: ['@cf/test/primary', '@cf/test/fallback'],
     rejected: 400,
     storedModel: '@cf/test/fallback',
+    recovery: Array.from({ length: 3 }, () => ({
+      status: 200,
+      calls: ['@cf/test/primary', '@cf/test/fallback'],
+      content: 'hello',
+    })),
   });
 });

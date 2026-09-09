@@ -27,6 +27,8 @@ Deployment, key rotation and rollback instructions live in [services/agens-relay
 
 ## Kimi Code evidence and boundary
 
+Current egress update: gateway log response bodies confirmed Kimi's Cloudflare WAF block page, while local and Vercel probes returned HTTP 200 with the same model/User-Agent. The active route now uses the authenticated [Vercel relay](../../services/kimi-relay/README.md). The earlier Gateway admission evidence below is historical, not proof that its egress remains usable. The model and supplier quota scope remain unchanged.
+
 The configured `sk-kimi-` credential was tested with the OpenAI-compatible standard `kimi-for-coding` model (Kimi K2.7 Code). This is the baseline-consumption K2.7 option; the HighSpeed variant consumes about three times the quota, and K3 is intentionally not configured.
 
 - Direct non-streaming inference against `https://api.kimi.com/coding/v1/chat/completions` returned a valid completion and token usage.
