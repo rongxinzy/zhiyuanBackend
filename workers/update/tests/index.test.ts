@@ -149,4 +149,49 @@ describe('update Worker dual protocol', () => {
     assert.deepEqual(await metadata.json(), { error: 'metadata_unavailable' });
     assert.equal(head.status, 404);
   });
+
+  it('serves each Windows inference edition from the beta pointer independently of stable', async () => {
+    const editions = ['lite', 'cpu', 'cuda'].map(variant => signedManifest({ platform: 'win32', arch: 'x64', variant }));
+    const { env, releases } = environment({
+      'channels/stable-pointer.json': JSON.stringify({ schemaVersion: 1, generation: '2026.10.15-build.1' }),
+      'channels/beta-pointer.json': JSON.stringify({ schemaVersion: 1, generation: '2026.10.19-build.1' }),
+      'generations/2026.10.19-build.1/legacy/beta.json': JSON.stringify({ schemaVersion: 1, manifests: editions }),
+      'generations/2026.10.19-build.1/electron/win32-x64-cuda/latest.yml': 'version: 2026.10.19-build.1\n',
+    });
+
+    for (const [index, variant] of ['lite', 'cpu', 'cuda'].entries()) {
+      const response = await fetchUpdate(`https://updates.example/v1/updates/latest?channel=beta&platform=win32&arch=x64&variant=${variant}`, env);
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), editions[index]);
+    }
+    const metadata = await fetchUpdate('https://updates.example/v2/electron/beta/win32/x64/cuda/latest.yml', env);
+    assert.equal(metadata.status, 200);
+    assert.equal(await metadata.text(), 'version: 2026.10.19-build.1\n');
+    assert.ok(!releases.reads.includes('channels/stable-pointer.json'));
+  });
+
+  it('accepts Linux and macOS edition variants and still rejects unknown channels', async () => {
+    const { env } = environment({
+      'channels/stable-pointer.json': JSON.stringify({ schemaVersion: 1, generation: '2026.10.19-build.1' }),
+      'generations/2026.10.19-build.1/legacy/stable.json': JSON.stringify({
+        schemaVersion: 1,
+        manifests: [signedManifest({ platform: 'linux', arch: 'x64', variant: 'appimage-cuda' })],
+      }),
+      'generations/2026.10.19-build.1/electron/darwin-x64-cpu/latest-mac.yml': 'version: 2026.10.19-build.1\n',
+    });
+
+    const linux = await fetchUpdate('https://updates.example/v1/updates/latest?channel=stable&platform=linux&arch=x64&variant=appimage-cuda', env);
+    const mac = await fetchUpdate('https://updates.example/v2/electron/stable/darwin/x64/cpu/latest-mac.yml', env);
+    const redirect = await fetchUpdate('https://updates.example/v2/electron/releases/2026.10.19-build.1/linux/x64/deb-cuda/zhiyuan.deb', env);
+    const unknown = await fetchUpdate('https://updates.example/v1/updates/latest?channel=nightly&platform=win32&arch=x64&variant=cpu', env);
+
+    assert.equal(linux.status, 200);
+    assert.equal(mac.status, 200);
+    assert.equal(redirect.status, 307);
+    assert.equal(
+      redirect.headers.get('location'),
+      'https://downloads.rongxzyai.com/releases/2026.10.19-build.1/linux-x64-deb-cuda/zhiyuan.deb',
+    );
+    assert.equal(unknown.status, 400);
+  });
 });

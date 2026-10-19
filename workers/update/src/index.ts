@@ -1,16 +1,27 @@
-const CHANNELS = new Set(['stable']);
+const CHANNELS = new Set(['stable', 'beta']);
 const PLATFORMS = new Set(['win32', 'darwin', 'linux']);
 const ARCHITECTURES = new Set(['x64', 'arm64']);
-const VARIANTS = new Set(['lite', 'full', 'default', 'deb', 'appimage']);
-const LEGACY_MANIFEST_KEY = 'channels/stable.json';
-const STABLE_POINTER_KEY = 'channels/stable-pointer.json';
+// Legacy variants (default/deb/appimage/full) stay for releases before the
+// lite/cpu/cuda inference editions; newer releases publish the edition names.
+const VARIANTS = new Set([
+  'lite', 'full', 'default', 'deb', 'appimage',
+  'cpu', 'cuda', 'deb-cpu', 'deb-cuda', 'appimage-cpu', 'appimage-cuda',
+]);
 const DOWNLOADS_ORIGIN = 'https://downloads.rongxzyai.com';
 const ARTIFACT_EXTENSIONS = new Set(['appimage', 'blockmap', 'deb', 'dmg', 'exe', 'zip']);
 const ELECTRON_TARGETS = new Map<string, ReadonlySet<string>>([
   ['win32:x64:lite', new Set(['latest.yml'])],
+  ['win32:x64:cpu', new Set(['latest.yml'])],
+  ['win32:x64:cuda', new Set(['latest.yml'])],
   ['darwin:arm64:default', new Set(['latest-mac.yml'])],
+  ['darwin:arm64:cpu', new Set(['latest-mac.yml'])],
+  ['darwin:x64:cpu', new Set(['latest-mac.yml'])],
   ['linux:x64:appimage', new Set(['latest-linux.yml'])],
   ['linux:x64:deb', new Set(['latest-linux.yml'])],
+  ['linux:x64:appimage-cpu', new Set(['latest-linux.yml'])],
+  ['linux:x64:deb-cpu', new Set(['latest-linux.yml'])],
+  ['linux:x64:appimage-cuda', new Set(['latest-linux.yml'])],
+  ['linux:x64:deb-cuda', new Set(['latest-linux.yml'])],
 ]);
 
 type Artifact = {
@@ -150,15 +161,16 @@ function parsePathSegment(value: string): string | null {
   }
 }
 
-async function activeRelease(env: Env): Promise<ActiveRelease> {
-  const pointerObject = await env.RELEASES.get(STABLE_POINTER_KEY);
-  if (!pointerObject) return { pointer: null, legacyManifestKey: LEGACY_MANIFEST_KEY };
+/** Each channel has its own pointer (channels/<channel>-pointer.json) and legacy manifest. */
+async function activeRelease(env: Env, channel: string): Promise<ActiveRelease> {
+  const pointerObject = await env.RELEASES.get(`channels/${channel}-pointer.json`);
+  if (!pointerObject) return { pointer: null, legacyManifestKey: `channels/${channel}.json` };
 
   const pointer: unknown = JSON.parse(await pointerObject.text());
   if (!isStablePointer(pointer)) throw new Error('invalid_stable_pointer');
   return {
     pointer,
-    legacyManifestKey: generationKey(pointer, 'legacy/stable.json'),
+    legacyManifestKey: generationKey(pointer, `legacy/${channel}.json`),
   };
 }
 
@@ -198,7 +210,7 @@ async function handleLegacy(request: Request, env: Env, url: URL): Promise<Respo
   }
 
   try {
-    const release = await activeRelease(env);
+    const release = await activeRelease(env, channel);
     const object = await env.RELEASES.get(release.legacyManifestKey);
     if (!object) return json({ error: 'manifest_unavailable' }, 503);
 
@@ -248,7 +260,7 @@ async function handleElectronFeed(request: Request, env: Env, url: URL): Promise
   }
 
   try {
-    const release = await activeRelease(env);
+    const release = await activeRelease(env, channel);
     if (!release.pointer) return json({ error: 'metadata_unavailable' }, 503);
 
     const target = `${platform}-${arch}-${variant}`;
