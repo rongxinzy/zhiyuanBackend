@@ -1,0 +1,17 @@
+{
+	"$schema": "../../node_modules/wrangler/config-schema.json",
+	"name": "zhiyuan-model-catalog-feed",
+	"compatibility_date": "2026-06-10",
+	"workers_dev": false,
+	"routes": [
+		{
+			"pattern": "models.rongxzyai.com/v1/catalog/feed/*",
+			"zone_name": "rongxzyai.com"
+		}
+	],
+	"assets": {
+		"directory": "catalog-feed",
+		"html_handling": "none",
+		"not_found_handling": "none"
+	}
+}

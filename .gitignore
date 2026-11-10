@@ -6,6 +6,7 @@ node_modules/
 .resend
 worker-configuration.d.ts
 workers/model-pool/.test-token
+workers/model-catalog/catalog-feed/v1/
 claudflare
 deleted-models-2026-08-05.json
 # Private product and bid documents
