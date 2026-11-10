@@ -27,6 +27,7 @@ function exportModel(row) {
   const files = (model.files ?? []).filter(file =>
     typeof file.path === 'string' &&
     file.path.toLowerCase().endsWith('.gguf') &&
+    !/imatrix/i.test(file.path) &&
     file.path.split('/').every(part => part && part !== '.' && part !== '..' && !/[\\:*?"<>|]/.test(part)) &&
     /^[a-f0-9]{40}$/i.test(file.revision ?? '') &&
     /^[a-f0-9]{64}$/i.test(file.sha256 ?? '') &&
