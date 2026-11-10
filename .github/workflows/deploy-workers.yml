@@ -139,13 +139,17 @@ jobs:
       - name: Generate verified feed assets
         run: |
           previous=()
+          feed=workers/model-catalog/catalog-feed/v1/catalog/feed
           if [[ -f previous-catalog/resources/model-catalog.sqlite ]]; then
             previous+=(previous-catalog/resources/model-catalog.sqlite)
+            if node desktop-catalog/scripts/packaging/assert-model-catalog.cjs "${previous[0]}"; then
+              node desktop-catalog/scripts/publish-model-catalog.cjs "${previous[0]}" "$feed"
+            fi
           fi
           node desktop-catalog/scripts/packaging/assert-model-catalog.cjs desktop-catalog/resources/model-catalog.sqlite
           node desktop-catalog/scripts/publish-model-catalog.cjs \
             desktop-catalog/resources/model-catalog.sqlite \
-            workers/model-catalog/catalog-feed/v1/catalog/feed "${previous[@]}"
+            "$feed" "${previous[@]}"
       - name: Deploy static feed route
         uses: cloudflare/wrangler-action@v4
         with:

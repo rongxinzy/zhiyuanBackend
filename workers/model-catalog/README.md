@@ -59,6 +59,12 @@ referenced artifacts respond on the configured route after deployment. Keep the
 snapshot JSON used to publish the feed for the next release and for desktop
 seed generation. The generated feed assets are local release inputs.
 
+For snapshots checked into the desktop repository, run the existing
+`deploy-workers.yml` workflow with the exact 40-character desktop SHA as
+`catalog-seed-ref` and the previous published seed SHA as
+`catalog-previous-ref`. The feed-only job uses the repository's existing
+Cloudflare deployment credential and skips the normal Worker deployment matrix.
+
 ## Refresh pending model metadata
 
 `workers/model-catalog/scripts/refresh-unverified-d1.sh` reads the local `claudflare` configuration, calls the public ModelScope legacy detail API, and refreshes pending `models` rows plus `model_files` in bounded batches. Set `REFRESH_BATCH_LIMIT`, `REFRESH_CONCURRENCY`, or `REFRESH_LOG` to adjust the run.
