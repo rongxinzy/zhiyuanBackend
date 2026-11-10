@@ -32,6 +32,39 @@ The search endpoint keeps the existing unrestricted behavior unless both filters
 
 `type=base` and `type=pro` select the corresponding device profile; `type=other` means unrestricted. `fit=runnable` includes both `recommended` and `runnable` models. Omit `type`/`device`/`fit` for the unrestricted catalogue. The legacy `device` and `deviceClass` parameters remain supported, but `type` takes precedence when both are present. After applying migration `0008_device_fit.sql`, run `backfill-device-fit.ts` once to label existing rows; future Worker syncs write the labels automatically.
 
+## Desktop catalog release feed
+
+The desktop catalog feed uses a separate static-assets Worker and the path
+`/v1/catalog/feed/*`. Its release is independent from the online catalog API.
+Only public model metadata goes into the assets. The desktop obtains weights
+from ModelScope using the recorded file revision and checksum.
+
+Export from the verified D1 catalog using the host Wrangler session. Retain the
+last published snapshot JSON to generate a delta:
+
+```sh
+node workers/model-catalog/scripts/export-catalog-snapshot.cjs /path/to/current-snapshot.json
+bun run /path/to/RongxinAI/scripts/publish-model-catalog.cjs \
+  /path/to/current-snapshot.json \
+  workers/model-catalog/catalog-feed/v1/catalog/feed \
+  /path/to/previous-snapshot.json
+wrangler deploy --dry-run --config workers/model-catalog/wrangler.feed.jsonc
+wrangler deploy --config workers/model-catalog/wrangler.feed.jsonc
+```
+
+Omit the previous snapshot for the first release. The desktop's populated
+`resources/model-catalog.sqlite` can also serve as the first publisher input.
+Confirm the manifest and its
+referenced artifacts respond on the configured route after deployment. Keep the
+snapshot JSON used to publish the feed for the next release and for desktop
+seed generation. The generated feed assets are local release inputs.
+
+For snapshots checked into the desktop repository, run the existing
+`deploy-workers.yml` workflow with the exact 40-character desktop SHA as
+`catalog-seed-ref` and the previous published seed SHA as
+`catalog-previous-ref`. The feed-only job uses the repository's existing
+Cloudflare deployment credential and skips the normal Worker deployment matrix.
+
 ## Refresh pending model metadata
 
 `workers/model-catalog/scripts/refresh-unverified-d1.sh` reads the local `claudflare` configuration, calls the public ModelScope legacy detail API, and refreshes pending `models` rows plus `model_files` in bounded batches. Set `REFRESH_BATCH_LIMIT`, `REFRESH_CONCURRENCY`, or `REFRESH_LOG` to adjust the run.
