@@ -13,6 +13,15 @@ on:
       - 'package-lock.json'
       - '.github/workflows/deploy-workers.yml'
   workflow_dispatch:
+    inputs:
+      catalog-seed-ref:
+        description: 'RongxinAI commit SHA for a feed-only deployment'
+        type: string
+        default: ''
+      catalog-previous-ref:
+        description: 'Optional RongxinAI commit SHA for the previous seed'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -24,6 +33,7 @@ concurrency:
 jobs:
   check:
     name: Check Workers
+    if: inputs.catalog-seed-ref == ''
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -93,3 +103,53 @@ jobs:
           accountId: 9ac9f96b683fc7350c779e5e8e082513
           wranglerVersion: 4.120.0
           command: deploy --config ${{ matrix.config }}
+
+  deploy-catalog-feed:
+    name: Deploy model catalog feed only
+    if: github.event_name == 'workflow_dispatch' && inputs.catalog-seed-ref != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate snapshot references
+        env:
+          CATALOG_REF: ${{ inputs.catalog-seed-ref }}
+          PREVIOUS_REF: ${{ inputs.catalog-previous-ref }}
+        run: |
+          [[ "$CATALOG_REF" =~ ^[a-f0-9]{40}$ ]]
+          [[ -z "$PREVIOUS_REF" || "$PREVIOUS_REF" =~ ^[a-f0-9]{40}$ ]]
+      - uses: actions/checkout@v4
+        with:
+          repository: rongxinzy/RongxinAI
+          ref: ${{ inputs.catalog-seed-ref }}
+          path: desktop-catalog
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        if: inputs.catalog-previous-ref != ''
+        with:
+          repository: rongxinzy/RongxinAI
+          ref: ${{ inputs.catalog-previous-ref }}
+          path: previous-catalog
+          persist-credentials: false
+      - name: Generate verified feed assets
+        run: |
+          previous=()
+          if [[ -f previous-catalog/resources/model-catalog.sqlite ]]; then
+            previous+=(previous-catalog/resources/model-catalog.sqlite)
+          fi
+          node desktop-catalog/scripts/packaging/assert-model-catalog.cjs desktop-catalog/resources/model-catalog.sqlite
+          node desktop-catalog/scripts/publish-model-catalog.cjs \
+            desktop-catalog/resources/model-catalog.sqlite \
+            workers/model-catalog/catalog-feed/v1/catalog/feed "${previous[@]}"
+      - name: Deploy static feed route
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE }}
+          accountId: 9ac9f96b683fc7350c779e5e8e082513
+          wranglerVersion: 4.120.0
+          command: deploy --config workers/model-catalog/wrangler.feed.jsonc
